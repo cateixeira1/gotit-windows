@@ -1,0 +1,17 @@
+# Got It! para Windows: bibliotecas do aplicativo (versões testadas em novembro de 2026).
+PySide6-Essentials>=6.10,<7      # janelas, canvas, texto, PDF (QPdfWriter)
+PySide6-Addons>=6.10,<7          # áudio e vídeo (Qt Multimedia), impressão
+pypdfium2>=4.30,<6               # páginas de PDF (leitor, PDF para anotar)
+pillow>=11
+pillow-heif>=0.18                # fotos HEIC do iPhone
+numpy>=1.26
+# Inteligência no computador (modelos baixados só quando a pessoa pede)
+litert-lm-api==0.19.2            # Gemma 4 E2B e EmbeddingGemma: o mesmo motor do Got It! para iPhone
+faster-whisper>=1.1,<2           # transcrição de áudio (Whisper)
+av>=12                           # leitura do áudio (m4a, mp3, wav...) para a transcrição
+winrt-runtime>=3.1               # reconhecimento de escrita do Windows (Windows Ink)
+winrt-Windows.UI.Input.Inking>=3.1
+winrt-Windows.Foundation>=3.1
+winrt-Windows.Foundation.Collections>=3.1
+winrt-Windows.Foundation.Numerics>=3.1
+pyinstaller>=6.11,<7

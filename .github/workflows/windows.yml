@@ -1,0 +1,99 @@
+name: Windows - testar e gerar o instalador
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      OUT: ${{ github.workspace }}\ci-output
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Gerar o aplicativo e o instalador (setup.exe)
+        id: build
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force "$env:OUT\logs", "$env:OUT\screenshots" | Out-Null
+          "commit=$env:GITHUB_SHA" | Out-File -Encoding utf8 "$env:OUT\STATUS.txt"
+          Start-Transcript -Path "$env:OUT\logs\build.log" | Out-Null
+          & .\build\build.ps1 -CI
+          $rc = $LASTEXITCODE
+          Stop-Transcript | Out-Null
+          exit $rc
+
+      - name: Testes num Windows de verdade
+        id: test
+        if: always() && steps.build.outcome == 'success'
+        timeout-minutes: 25
+        shell: powershell
+        run: |
+          $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+          & uv pip install --python .venv\Scripts\python.exe pytest pytest-timeout | Out-Null
+          $ErrorActionPreference = "Continue"
+          & .venv\Scripts\python.exe -m pytest -v -p no:cacheprovider --timeout=300 tests *>&1 | Tee-Object -FilePath "$env:OUT\logs\tests.log"
+          exit $LASTEXITCODE
+
+      - name: Capturas de tela (Windows, fonte Segoe UI)
+        id: shots
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $demo = Join-Path $env:RUNNER_TEMP "demo"
+          $first = $true
+          foreach ($s in @("home", "page2", "teia", "simple", "ruled", "diagram", "search", "all", "empty", "settings", "trash")) {
+            $argv = @("--demo", "`"$demo`"", "--screen", $s, "--shot", "`"$env:OUT\screenshots\$s.png`"")
+            if (-not $first) { $argv = @("--keep") + $argv }
+            $first = $false
+            $p = Start-Process -FilePath "dist\GotIt\GotIt.exe" -ArgumentList $argv -PassThru
+            if (-not $p.WaitForExit(120000)) { $p.Kill(); "timeout: $s" }
+          }
+          Get-ChildItem "$env:OUT\screenshots"
+          Get-ChildItem dist\GotIt_Setup_*.exe | ForEach-Object { "{0}: {1:N1} MB" -f $_.Name, ($_.Length / 1MB) } | Tee-Object -FilePath "$env:OUT\logs\size.txt"
+
+      - name: Publicar resultados (branch windows-output)
+        if: always()
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          "build=${{ steps.build.outcome }}" | Out-File -Append -Encoding utf8 "$env:OUT\STATUS.txt"
+          "test=${{ steps.test.outcome }}" | Out-File -Append -Encoding utf8 "$env:OUT\STATUS.txt"
+          "screenshots=${{ steps.shots.outcome }}" | Out-File -Append -Encoding utf8 "$env:OUT\STATUS.txt"
+          "done=$(Get-Date -Format o)" | Out-File -Append -Encoding utf8 "$env:OUT\STATUS.txt"
+          Set-Location $env:OUT
+          git init -q -b windows-output
+          git config user.name "ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add -A
+          git commit -qm "CI $env:GITHUB_SHA"
+          git push -qf "https://x-access-token:$env:GITHUB_TOKEN@github.com/$env:GITHUB_REPOSITORY.git" windows-output
+
+      - name: Publicar o instalador na página de versões
+        if: steps.build.outcome == 'success' && steps.test.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          setup=$(ls dist/GotIt_Setup_*.exe | head -1)
+          gh release delete ultima-versao -y --cleanup-tag 2>/dev/null || true
+          gh release create ultima-versao "$setup" \
+            --target "$GITHUB_SHA" \
+            --title "Got It! para Windows (última versão)" \
+            --notes "Baixe o $(basename "$setup") e dê dois cliques para instalar. Gerado do commit ${GITHUB_SHA::7}." \
+            --latest
