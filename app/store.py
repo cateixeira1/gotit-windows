@@ -430,7 +430,8 @@ class Store:
             digest = path.name.split(".")[0]
             if digest in used or path.suffix == ".tmp" and now - path.stat().st_mtime < 3600:
                 continue
-            if now - path.stat().st_mtime >= min_age_seconds:
+            age = max(0.0, now - path.stat().st_mtime)      # relógio do disco pode estar uns ms à frente
+            if age >= min_age_seconds:
                 try:
                     path.unlink()
                     removed += 1
