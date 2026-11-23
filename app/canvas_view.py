@@ -128,8 +128,9 @@ class CanvasView(QGraphicsView):
         sc = self.scene()
         if sc is None:
             return
-        avail = max(200, self.viewport().width() - 56)
-        self.set_zoom(min(2.0, avail / (sc.page_w * self.SCREEN)))
+        avail = max(200, self.viewport().width() - 40)
+        rect = sc.sceneRect()
+        self.set_zoom(min(2.0, avail / (rect.width() * self.SCREEN)))
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
