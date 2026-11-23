@@ -23,6 +23,8 @@ from thumbs import Thumbs
 class EmptyState(QWidget):
     def __init__(self, window):
         super().__init__()
+        self.setObjectName("empty")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QVBoxLayout(self)
         lay.addStretch(2)
         logo = QLabel()
@@ -53,7 +55,7 @@ class EmptyState(QWidget):
         lay.addSpacing(12)
         lay.addLayout(row)
         lay.addStretch(3)
-        self.setStyleSheet(f"background: {theme.DESK};")
+        self.setStyleSheet(f"#empty {{ background: {theme.DESK}; }}")
 
 
 class MainWindow(QMainWindow):

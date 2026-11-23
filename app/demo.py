@@ -79,7 +79,10 @@ def build(folder: Path, keep: bool = False) -> Path:
 
     doc = model.new_document("Plano do lançamento")
     pid = doc["pages"][0]["id"]
-    doc["story"] = {"html": STORY, "text": "Plano do lançamento Objetivo teste com 10 pessoas reunião"}
+    from PySide6.QtGui import QTextDocument
+    plain = QTextDocument()
+    plain.setHtml(STORY)
+    doc["story"] = {"html": STORY, "text": plain.toPlainText()}
     img = store.import_bytes(_png(640, 400), ".png")
     audio = store.import_bytes(_wav(), ".wav")
     rect_id, ell_id = model.new_id(), model.new_id()
@@ -216,6 +219,11 @@ def show(win, screen: str, shot: str | None) -> None:
         d = settings_dialog.SettingsDialog(win)
         d.show()
         dialog.append(d)
+    elif screen == "assistant":
+        open_title("Plano do lançamento")
+        import assistant
+        assistant.open_panel(win)
+        dialog.append(assistant._panel)
     elif screen == "trash":
         import dialogs
         d = dialogs.TrashDialog(store, win)

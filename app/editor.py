@@ -201,6 +201,7 @@ class Editor(QWidget):
         self.set_tool("select")
         self.dirty = False
         self.view.resetTransform()
+        self.bar.add_cards.setVisible(doc.get("kind") == "web")
         QTimer.singleShot(0, self._after_open(find, part))
         if old is not None:
             old.editor = None
@@ -285,7 +286,7 @@ class Editor(QWidget):
         if self.scene is None:
             return
         r = self.scene.page_rect(idx)
-        self.view.centerOn(r.center().x(), r.top() + self.view.viewport().height() / 2 / self.view.zoom() - 10)
+        self.view.centerOn(r.center().x(), r.top() + self.view.viewport().height() / 2 / self.view.transform().m11() - 10)
 
     def _title_edited(self) -> None:
         if self.scene is None:
@@ -478,7 +479,7 @@ class Editor(QWidget):
 
     def erase_at(self, pos: QPointF) -> None:
         sc = self.scene
-        r = self.eraser_radius / max(0.3, self.view.zoom()) * 1.0
+        r = self.eraser_radius / max(0.3, self.view.transform().m11())
         box = QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
         for sid, st in list(sc.strokes_by_id.items()):
             if not st.sceneBoundingRect().intersects(box):
@@ -1449,9 +1450,6 @@ class Editor(QWidget):
             return
         if 4 <= size <= 400:
             self.fmt("size", size)
-
-    def update_named_style(self) -> None:
-        self.toast("O estilo do parágrafo foi atualizado pela seleção.")
 
     def _refresh_state(self) -> None:
         if self.scene is None or not self.isVisible():

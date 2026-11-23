@@ -80,7 +80,7 @@ class FormatBar(QFrame):
         self.title = QLineEdit()
         self.title.setPlaceholderText("Título")
         self.title.setFont(theme.ui_font(11, True))
-        self.title.setMinimumWidth(120)
+        self.title.setMinimumWidth(170)
         self.title.setMaximumWidth(260)
         self.title.setStyleSheet("QLineEdit { border: 1px solid transparent; background: transparent; padding: 3px 6px; }"
                                  "QLineEdit:hover { border: 1px solid #DDE2E7; } QLineEdit:focus { border: 1px solid %s; background: white; }" % theme.ACCENT)
@@ -120,6 +120,13 @@ class FormatBar(QFrame):
         self.zoom.setToolTip("Zoom (Ctrl + roda do mouse)")
         self.zoom.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.zoom.setMinimumWidth(56)
+        self.add_cards = QToolButton()
+        self.add_cards.setIcon(icons.icon("plus", theme.INK))
+        self.add_cards.setText("Adicionar notas")
+        self.add_cards.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.add_cards.setToolTip("Adicionar notas a esta Teia")
+        self.add_cards.clicked.connect(editor.add_notes_to_teia)
+        self.add_cards.hide()
         self.pages = tool_button("pages", "Páginas", True)
         self.tools = tool_button("shapes", "Ferramentas", True)
         self.note_menu = tool_button("more", "Mais (exportar, imprimir, citada em…)")
@@ -138,7 +145,7 @@ class FormatBar(QFrame):
                   self.align, self.lists, self.more_text):
             row.addWidget(w)
         row.addStretch(1)
-        for w in (self.zoom, sep(), self.pages, self.tools, self.note_menu):
+        for w in (self.add_cards, self.zoom, sep(), self.pages, self.tools, self.note_menu):
             row.addWidget(w)
         self._build_menus()
 
@@ -179,8 +186,6 @@ class FormatBar(QFrame):
         m.addAction(icons.icon("link"), "Inserir link… (Ctrl+K)").triggered.connect(ed.insert_link)
         m.addAction(icons.icon("note"), "Ligar a outra nota…").triggered.connect(ed.link_to_note)
         m.addAction(icons.icon("find"), "Localizar e substituir… (Ctrl+H)").triggered.connect(ed.find_replace)
-        m.addSeparator()
-        m.addAction("Atualizar o estilo pela seleção").triggered.connect(ed.update_named_style)
         self.more_text.setMenu(m)
         m = QMenu(self)
         m.addAction(icons.icon("fit"), "Ajustar à largura").triggered.connect(lambda: ed.view.fit_width())

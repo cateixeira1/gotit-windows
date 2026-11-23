@@ -342,7 +342,8 @@ class AssistantPanel(QDialog):
         self.msgs.setSpacing(10)
         self.msgs.addStretch(1)
         self.scroll.setWidget(self.host)
-        self.scroll.setStyleSheet(f"background: {theme.WINDOW};")
+        self.host.setObjectName("chat")
+        self.host.setStyleSheet(f"#chat {{ background: {theme.WINDOW}; }}")
         lay.addWidget(self.scroll, 1)
         self.suggest = QHBoxLayout()
         self.b_sum = QPushButton(icons.icon("note"), "Resumir esta nota")
@@ -385,7 +386,8 @@ class AssistantPanel(QDialog):
         self.send.setEnabled(ready)
         if not ready and self.model_box is None:
             self.model_box = QFrame()
-            self.model_box.setStyleSheet(f"background: white; border: 1px solid {theme.LINE}; border-radius: 12px;")
+            self.model_box.setObjectName("modelbox")
+            self.model_box.setStyleSheet(f"#modelbox {{ background: white; border: 1px solid {theme.LINE}; border-radius: 12px; }}")
             v = QVBoxLayout(self.model_box)
             msg = QLabel("O assistente roda inteiro neste computador, sem internet e sem enviar as suas notas. "
                          "Para isso, baixe uma vez o modelo Gemma 4 E2B, do Google (licença Apache 2.0).")
@@ -489,15 +491,7 @@ class AssistantPanel(QDialog):
         except Exception:
             pass
         if not found:
-            hits = store.search(q)
-            words = [w for w in re.findall(r"\w{4,}", q, flags=re.UNICODE)]
-            if not hits and words:
-                seen = set()
-                for w in words:
-                    for h in store.search(w):
-                        if h.doc_id not in seen:
-                            seen.add(h.doc_id)
-                            hits.append(h)
+            hits = store.search(q) or store.search_any(q)
             for h in hits:
                 if only is not None and h.doc_id not in only:
                     continue
@@ -506,9 +500,12 @@ class AssistantPanel(QDialog):
                     continue
                 text = dict(model.collect_text(doc)).get(h.part) or note_text(doc, 1500)[0]
                 found.append({"doc_id": h.doc_id, "part": h.part, "title": h.title, "text": text[:1500]})
+            ed = self.window.editor
+            if not found and only is None and ed.doc is not None:
+                only = {ed.doc["id"]}           # sem nada nas buscas: a nota aberta
             if only is not None and not found:
                 for doc_id in only:
-                    doc = store.load(doc_id)
+                    doc = self._note() if (ed.doc is not None and ed.doc["id"] == doc_id) else store.load(doc_id)
                     if doc:
                         found.append({"doc_id": doc_id, "part": "story", "title": doc["title"], "text": note_text(doc, 1500)[0]})
         return pick_sources(found)
@@ -539,15 +536,15 @@ class AssistantPanel(QDialog):
                 raw(answer)
                 return
             final = post(answer) if post else answer.strip()
-            bubble.label.setText(final or "(sem resposta)")
+            bubble.label.setText(plain_text(final) or "(sem resposta)")
             secs = time.monotonic() - started
             if note:
                 n = QLabel(note)
                 n.setStyleSheet(f"color: {theme.MUTED}; font-size: 8pt;")
                 bubble.lay.addWidget(n)
             cited = []
-            if sources:
-                nums = citations(final, len(sources)) or list(range(1, len(sources) + 1))
+            nums = citations(final, len(sources)) if sources else []
+            if nums:
                 cited = [(n, sources[n - 1]) for n in nums]
                 box = QLabel("<b>Fontes</b><br>" + "<br>".join(
                     f'<a href="{n}">[{n}] {html.escape(s["title"] or "Sem título")}</a>' for n, s in cited))
@@ -591,7 +588,8 @@ class AssistantPanel(QDialog):
 
     def _proposal(self, doc_id: str, prop: dict, folders: dict) -> None:
         box = QFrame()
-        box.setStyleSheet(f"background: white; border: 1px solid {theme.LINE}; border-radius: 12px;")
+        box.setObjectName("proposal")
+        box.setStyleSheet(f"#proposal {{ background: white; border: 1px solid {theme.LINE}; border-radius: 12px; }}")
         v = QVBoxLayout(box)
         checks = []
         if prop["title"]:

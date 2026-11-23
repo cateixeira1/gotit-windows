@@ -168,6 +168,15 @@ class StrokeItem(QGraphicsItem):
         o = self.pos()
         return [(p[0] + o.x(), p[1] + o.y()) for p in self.points]
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.canvas.begin_change()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self.canvas.end_change("Mover")
+
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.canvas.editor is not None:
             self.canvas.editor.content_changed()

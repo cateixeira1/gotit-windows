@@ -101,15 +101,20 @@ class CanvasView(QGraphicsView):
         self.setBackgroundBrush(QColor(theme.DESK))
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.viewport().setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
+        # dedo rola a página (como no iPad); caneta e mouse desenham e selecionam
+        from PySide6.QtWidgets import QScroller
+        QScroller.grabGesture(self.viewport(), QScroller.ScrollerGestureType.TouchGesture)
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
 
     # ------------------------------------------------------------------ zoom
+    # 100% é o tamanho real do papel, como no Word: 1 pt = 96/72 pixels do Windows
+    SCREEN = 96 / 72
+
     def zoom(self) -> float:
-        return self.transform().m11()
+        return self.transform().m11() / self.SCREEN
 
     def set_zoom(self, z: float, anchor_mouse: bool = False) -> None:
-        z = max(0.25, min(4.0, z))
+        z = max(0.2, min(4.0, z))
         if not anchor_mouse:
             self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         f = z / self.zoom()
@@ -124,7 +129,7 @@ class CanvasView(QGraphicsView):
         if sc is None:
             return
         avail = max(200, self.viewport().width() - 56)
-        self.set_zoom(min(2.0, avail / sc.page_w))
+        self.set_zoom(min(2.0, avail / (sc.page_w * self.SCREEN)))
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -234,7 +239,7 @@ class CanvasView(QGraphicsView):
             return
         if self.live is not None:
             last = self.live.points[-1]
-            if math.hypot(pos.x() - last[0], pos.y() - last[1]) * self.zoom() >= 0.8:
+            if math.hypot(pos.x() - last[0], pos.y() - last[1]) * self.transform().m11() >= 0.8:
                 self.live.add(pos, pressure)
 
     def _end(self, tool, pos: QPointF) -> None:

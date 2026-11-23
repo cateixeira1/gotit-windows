@@ -357,6 +357,22 @@ class Store:
             hits[r["doc_id"]] = SearchHit(r["doc_id"], r["title"], r["kind"], r["part"], r["snip"], 1, r["folder_id"])
         return list(hits.values())[:limit]
 
+    STOPWORDS = set("""a o as os um uma uns umas de do da dos das em no na nos nas por para pra com sem que qual quais
+        quando onde como e ou mas se meu minha meus minhas seu sua seus suas é foi ser estar tem ter há isso isto
+        esse essa este esta aquele aquela preciso precisa fazer faz sobre até ao aos à às the and of to in is""".split())
+
+    def search_any(self, text: str, limit: int = 20) -> list[SearchHit]:
+        """Qualquer palavra serve (para o assistente achar trechos de uma pergunta em linguagem natural)."""
+        words = [w for w in re.findall(r"\w{3,}", text.lower(), flags=re.UNICODE) if w not in self.STOPWORDS]
+        if not words:
+            return []
+        query = " OR ".join(f'"{w}"*' for w in words)
+        rows = self.db.execute(
+            """SELECT s.doc_id, s.part, snippet(search, -1, '[[', ']]', '…', 14) AS snip, d.title, d.kind, d.folder_id
+               FROM search s JOIN documents d ON d.id = s.doc_id
+               WHERE search MATCH ? AND d.trashed_at IS NULL ORDER BY rank LIMIT ?""", (query, limit)).fetchall()
+        return [SearchHit(r["doc_id"], r["title"], r["kind"], r["part"], r["snip"], 1, r["folder_id"]) for r in rows]
+
     def cited_by(self, doc_id: str) -> list[NoteInfo]:
         rows = self.db.execute(
             """SELECT d.id, d.kind, d.title, d.created, d.updated, d.revision, d.folder_id, d.trashed_at

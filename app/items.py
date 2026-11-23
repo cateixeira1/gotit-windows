@@ -607,6 +607,22 @@ class StickyItem(TextBlock):
     def default_family(self):
         return theme.sticky_family()
 
+    def _setup_text(self, state):
+        if not state.get("fontSize"):
+            # tamanho que cabe num post-it de 200 pt em cada fonte de escrita à mão
+            self.default_font_size = {"Segoe Print": 15.0, "Patrick Hand": 20.0, "Caveat": 22.0}.get(self.default_family(), 18.0)
+        super()._setup_text(state)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemClipsChildrenToShape, True)
+
+    def shape(self):
+        path = QPainterPath()
+        path.addRect(self.rect())
+        if self.isSelected():
+            s = self._ui_scale()
+            for p in self.handle_points():
+                path.addEllipse(p, (HANDLE + 3) * s, (HANDLE + 3) * s)
+        return path
+
     def text_rect(self):
         return QRectF(14, 30, max(10, self.w - 28), max(10, self.h - 44))
 
