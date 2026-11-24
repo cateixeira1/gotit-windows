@@ -359,6 +359,7 @@ def _write(ed, text, x=120.0, y=300.0, size=34.0):
 def test_handwritten_sum_is_solved_without_windows(window, qapp, monkeypatch):
     import handwriting
     monkeypatch.setattr(handwriting, "RUN_IN_THREAD", False)
+    monkeypatch.setattr(handwriting, "available", lambda: False)
     ed = open_new(window, qapp)
     ed.doc["canvas"]["solveEquations"] = True
     ed.doc["canvas"]["recognizeDiagrams"] = True
@@ -370,6 +371,23 @@ def test_handwritten_sum_is_solved_without_windows(window, qapp, monkeypatch):
     assert len(answers) == 1 and answers[0].data_state["text"] == "19"
     ed.undo()
     assert not [it for it in ed.scene.items_by_id.values() if it.data_state.get("equationOf")]
+
+
+def test_handwritten_sum_in_background(window, qapp):
+    """Como no app: leitura numa thread (no Windows com reconhecedor, junta as leituras dele)."""
+    import time
+    ed = open_new(window, qapp)
+    ed.doc["canvas"]["solveEquations"] = True
+    ed.doc["canvas"]["handwritingToText"] = False
+    _write(ed, "12+7=", y=420)
+    ed.ink_timer.stop()
+    ed._ink_pause()
+    end = time.monotonic() + 30
+    answers = []
+    while time.monotonic() < end and not answers:
+        pump(qapp, 50)
+        answers = [it for it in ed.scene.items_by_id.values() if it.data_state.get("equationOf")]
+    assert answers and answers[0].data_state["text"] == "19"
 
 
 def test_eraser_removes_recognized_shapes(window, qapp):

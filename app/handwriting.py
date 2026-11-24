@@ -85,6 +85,7 @@ class _Windows:
         import asyncio
         from winrt.windows.ui.input.inking import InkRecognizerContainer
         self.loop = asyncio.new_event_loop()
+        self.broken = False
         self.rc = InkRecognizerContainer()
         names = {r.name: r for r in self.rc.get_recognizers()}
         best = preferred(list(names))
@@ -106,10 +107,19 @@ class _Windows:
                 ink_points = [InkPoint((float(x), float(y)), 0.5), InkPoint((float(x) + 0.6, float(y) + 0.6), 0.5)]
             container.add_stroke(builder.create_stroke_from_ink_points(ink_points, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)))
 
+        if self.broken:
+            return []
+
         async def run():
             results = await self.rc.recognize_async(container, InkRecognitionTarget.ALL)
             return [list(r.get_text_candidates()) for r in results]
-        return [w for w in self.loop.run_until_complete(run()) if w]
+        import asyncio
+        try:
+            found = self.loop.run_until_complete(asyncio.wait_for(run(), 6))
+        except asyncio.TimeoutError:
+            self.broken = True        # reconhecedor travado: segue só com o leitor do app
+            return []
+        return [w for w in found if w]
 
     def close(self):
         self.loop.close()
