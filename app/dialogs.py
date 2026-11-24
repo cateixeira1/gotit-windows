@@ -221,6 +221,14 @@ class HeaderFooterDialog(QDialog):
         self.num_size.setRange(8, 48)
         self.num_size.setSuffix(" pt")
         self.num_size.setValue(int(n.get("size") or 11))
+        # aberto por "Numerar páginas": já vem marcado; mexer em qualquer opção também marca
+        if tab == 2 and not canvas.get("pageNumbers"):
+            self.numbered.setChecked(True)
+        for combo in (self.position, self.num_align, self.fmt):
+            combo.currentIndexChanged.connect(lambda _=0: self.numbered.setChecked(True))
+        for spin in (self.start, self.num_size):
+            spin.valueChanged.connect(lambda _=0: self.numbered.setChecked(True))
+        self.skip.toggled.connect(lambda on: on and self.numbered.setChecked(True))
         form.addRow(self.numbered)
         form.addRow("Posição", self.position)
         form.addRow("Alinhamento", self.num_align)
@@ -248,7 +256,7 @@ class HeaderFooterDialog(QDialog):
 
 
 class PaperDialog(QDialog):
-    def __init__(self, paper: dict | None, parent=None):
+    def __init__(self, paper: dict | None, parent=None, grid_typing: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Papel")
         paper = paper or {}
@@ -277,6 +285,9 @@ class PaperDialog(QDialog):
         self.scope.addItem("Na metade de baixo desta página", "bottom")
         form.addRow("Onde", self.scope)
         lay.addLayout(form)
+        self.grid_typing = QCheckBox("No quadriculado, clicar num quadrado digita uma conta (um caractere por quadrado)")
+        self.grid_typing.setChecked(grid_typing)
+        lay.addWidget(self.grid_typing)
         note = QLabel("No papel caderno na nota toda, cada linha do texto ocupa uma faixa da pauta.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {theme.MUTED};")

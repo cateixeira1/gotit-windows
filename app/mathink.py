@@ -355,18 +355,27 @@ def segment(strokes: list[list[Point]]) -> list[Symbol]:
     return [Symbol([s for _, s in g], box_of([s for _, s in g])) for g in groups]
 
 
-def read(strokes: list[list[Point]], symbol_reader=None, limit: int = 8) -> list[str]:
+def read(strokes: list[list[Point]], symbol_reader=None, limit: int = 8, columns: list[int] | None = None) -> list[str]:
     """Leituras possíveis da linha. ``symbol_reader(strokes) -> [str]`` (opcional) dá as
-    leituras do reconhecedor do Windows para um símbolo; elas vêm antes das do $P."""
-    strokes = [[(float(p[0]), float(p[1])) for p in s] for s in strokes if s]
+    leituras do reconhecedor do Windows para um símbolo; elas vêm antes das do $P.
+    ``columns`` (papel quadriculado): a coluna de cada traço; cada quadrado é um símbolo."""
+    keep = [i for i, s in enumerate(strokes) if s]
+    strokes = [[(float(p[0]), float(p[1])) for p in strokes[i]] for i in keep]
     if not strokes:
         return []
-    symbols = segment(strokes)
+    if columns is not None:
+        cols = [columns[i] for i in keep]
+        symbols = [Symbol([s for s, c in zip(strokes, cols) if c == col], box_of([s for s, c in zip(strokes, cols) if c == col]))
+                   for col in sorted(set(cols))]
+    else:
+        symbols = segment(strokes)
     tall = sorted(s.box.h for s in symbols if s.box.h > 0)
     line_h = tall[len(tall) * 2 // 3] if tall else 20.0
     base = sorted(s.box.y1 for s in symbols)[len(symbols) // 2]
     for sym in symbols:
         op = operator(sym.strokes, line_h)
+        if op == "." and (sym.box.y0 + sym.box.y1) / 2 > base - 0.22 * line_h:
+            op = ","                     # pingo embaixo, na linha: vírgula decimal; no meio: vezes
         if op:
             sym.options = [(op, 0.0)]
             continue
@@ -412,7 +421,7 @@ def read(strokes: list[list[Point]], symbol_reader=None, limit: int = 8) -> list
 
 SYMBOL_MAP = {"O": "0", "o": "0", "D": "0", "Q": "0", "l": "1", "I": "1", "|": "1", "i": "1", "!": "1", "z": "2",
               "Z": "2", "S": "5", "s": "5", "b": "6", "G": "6", "B": "8", "g": "9", "q": "9", "X": "x", "×": "x",
-              "t": "+", "T": "+", "—": "-", "–": "-", "−": "-", "_": "-", "~": "-", ",": "."}
+              "t": "+", "T": "+", "—": "-", "–": "-", "−": "-", "_": "-", "~": "-", "·": ".", "•": ".", "*": "."}
 
 
 def _symbol_char(cand: str) -> str | None:

@@ -326,6 +326,16 @@ def test_delete_key_removes_selection(window, qapp):
 
 
 # ---------------------------------------------------------------- contas escritas à mão
+def _dense(st):
+    out = []
+    for a, b in zip(st, st[1:]):
+        for k in range(6):
+            t = k / 6
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    out.append(st[-1])
+    return out
+
+
 def _glyphs():
     import mathink
 
@@ -340,11 +350,21 @@ def _glyphs():
     }
 
 
-def _write(ed, text, x=120.0, y=300.0, size=34.0):
+def _write(ed, text, x=120.0, y=300.0, size=34.0, cell=None):
+    """Escreve com a "caneta". Com ``cell``: um caractere por quadrado a partir de (x, y)."""
     g = _glyphs()
+    if cell:
+        size = cell * 0.7
     for ch in text:
         sz = size * 0.7 if ch in "+=" else size
         dy = size * 0.15 if ch in "+=" else 0
+        if cell:
+            x0 = x + (cell - sz * 0.9) / 2
+            for st in g[ch]:
+                ed.finish_stroke(0, "pen", [(x0 + px * sz / 100, y + (cell - size) / 2 + dy + py * sz / 100, 0.5)
+                                            for px, py in _dense(st)])
+            x += cell
+            continue
         for st in g[ch]:
             dense = []
             for a, b in zip(st, st[1:]):
@@ -428,3 +448,117 @@ def test_click_on_page_opens_text_box(window, qapp):
     assert not [it for it in sc.items_by_id.values() if it.data_state.get("autoBox") and it is not box]
     simple = open_new(window, qapp, simple=True)
     assert not simple.click_off_story(QPointF(300, 500))
+
+
+def _answers(ed):
+    return [it for it in ed.scene.items_by_id.values() if it.data_state.get("equationOf")]
+
+
+def test_answer_sits_on_the_baseline_and_can_be_erased(window, qapp, monkeypatch):
+    import handwriting
+    monkeypatch.setattr(handwriting, "RUN_IN_THREAD", False)
+    monkeypatch.setattr(handwriting, "available", lambda: False)
+    ed = open_new(window, qapp)
+    ed.doc["canvas"]["solveEquations"] = True
+    _write(ed, "12+7=", y=300, size=34)
+    ed.ink_timer.stop()
+    ed._ink_pause()
+    (ans,) = _answers(ed)
+    line = ans.text.document().firstBlock().layout().lineAt(0)
+    base = ans.mapToScene(ans.text.pos() + QPointF(0, line.y() + line.ascent())).y()
+    assert abs(base - 334) < 1.5                       # algarismos vão de y=300 a 334
+    ed.scene.begin_change()
+    r = ans.sceneBoundingRect()
+    ed.erase_at(QPointF(r.center().x(), 320))
+    ed.scene.end_change("Apagar")
+    assert not _answers(ed)
+
+
+def test_partial_eraser_cuts_only_where_it_passes(window, qapp):
+    ed = open_new(window, qapp)
+    ed.doc["canvas"]["recognizeDiagrams"] = False
+    ed.finish_stroke(0, "pen", [(100.0, 500.0, 0.5), (400.0, 500.0, 0.5)])
+    ed.eraser_whole = False
+    ed.scene.begin_change()
+    ed.erase_at(QPointF(250, 500))
+    ed.scene.end_change("Apagar")
+    pieces = sorted(st.data_state["points"][0][0] for st in ed.scene.strokes_by_id.values())
+    assert len(pieces) == 2 and pieces[0] == 100.0
+    # linha reconhecida (forma perfeita) também é cortada, não some inteira
+    ed.doc["canvas"]["recognizeDiagrams"] = True
+    ed.finish_stroke(0, "pen", [(100.0 + i * 10, 650.0, 0.5) for i in range(31)])
+    lines = [it for it in ed.scene.items_by_id.values() if it.kind == "line"]
+    assert len(lines) == 1
+    ed.scene.begin_change()
+    ed.erase_at(QPointF(250, 650))
+    ed.scene.end_change("Apagar")
+    assert len([it for it in ed.scene.items_by_id.values() if it.kind == "line"]) == 2
+
+
+def _grid_note(window, qapp):
+    import model
+    ed = open_new(window, qapp)
+    with ed.scene.change("Papel"):
+        ed.doc["canvas"]["paper"] = {"kind": "grid", "spacing": model.CM}
+        ed.scene.apply_page_format()
+    return ed, ed.scene.grid_at(0, 400)[0]
+
+
+def test_grid_paper_handwriting_one_symbol_per_square(window, qapp, monkeypatch):
+    import handwriting
+    monkeypatch.setattr(handwriting, "RUN_IN_THREAD", False)
+    monkeypatch.setattr(handwriting, "available", lambda: False)
+    ed, cell = _grid_note(window, qapp)
+    ed.doc["canvas"]["solveEquations"] = True
+    _write(ed, "12+7=", x=5 * cell, y=20 * cell, cell=cell)
+    ed.ink_timer.stop()
+    ed._ink_pause()
+    (ans,) = _answers(ed)
+    st = ans.state()
+    assert st["kind"] == "cells" and st["answer"] == "19"
+    assert abs(st["frame"]["x"] - 10 * cell) < 0.5 and abs(st["frame"]["y"] - 20 * cell) < 0.5   # quadrado depois do "="
+
+
+def test_grid_paper_typing_square_by_square(window, qapp):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+    ed, cell = _grid_note(window, qapp)
+    sc = ed.scene
+    before = len(ed.history.entries)
+    assert ed.click_off_story(QPointF(3.5 * cell, 18.5 * cell))
+    item = [it for it in sc.items_by_id.values() if it.kind == "cells"][0]
+    assert item.editing
+    for ch in "3.4=":
+        item.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, 0, Qt.KeyboardModifier.NoModifier, ch))
+    st = item.state()
+    assert st["text"] == "3.4=" and st["answer"] == "12"
+    assert abs(st["frame"]["x"] - 3 * cell) < 0.5 and abs(st["frame"]["y"] - 18 * cell) < 0.5
+    assert item.chars()[4] == ("1", True)                # o 12 começa no quadrado seguinte ao "="
+    item.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier))
+    assert not item.editing and len(ed.history.entries) == before + 1
+    ed.undo()
+    assert not [it for it in sc.items_by_id.values() if it.kind == "cells"]
+    # clique e sai sem digitar: não sobra nada
+    assert ed.click_off_story(QPointF(3.5 * cell, 25.5 * cell))
+    ed.stop_all_editing()
+    assert not [it for it in sc.items_by_id.values() if it.kind == "cells"] and ed.history.index == before
+
+
+def test_page_numbers_dialog_starts_checked(window, qapp):
+    import dialogs
+    ed = open_new(window, qapp)
+    dlg = dialogs.HeaderFooterDialog(ed.doc["canvas"], ed._pick_band_image, 2, ed)
+    assert dlg.numbered.isChecked()
+    assert dlg.result_canvas(ed.doc["canvas"])["pageNumbers"]["format"] == "n"
+
+
+def test_recent_notes_include_folders(window, qapp):
+    import sidebar
+    a = window.store.create(__import__("model").new_document("Dentro da pasta"))["id"]
+    f = window.store.create_folder("Clientes", None)
+    window.store.move_note(a, f.id)
+    window.sidebar.folder_id = None
+    window.sidebar.refresh()
+    cards = window.sidebar.findChildren(sidebar.NoteCard)
+    mine = [c for c in cards if c.info.id == a]
+    assert mine and mine[0].folder == "Clientes"

@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 import threading
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QPointF, QObject, Qt, Signal
 
 import mathsolve
 import model
@@ -154,9 +154,10 @@ def recognize(points_per_stroke) -> str:
         win.close()
 
 
-def solve_strokes(points_per_stroke, win=None) -> tuple[str, str] | None:
+def solve_strokes(points_per_stroke, win=None, columns=None) -> tuple[str, str] | None:
     """(conta lida, resposta) para traços escritos à mão, ou None. Lê símbolo a símbolo (com o
-    Windows, se houver, e com o leitor próprio do app) e também a linha inteira pelo Windows."""
+    Windows, se houver, e com o leitor próprio do app) e também a linha inteira pelo Windows.
+    ``columns``: no papel quadriculado, a coluna de cada traço (um símbolo por quadrado)."""
     import mathink
     reader = None
     if win is not None:
@@ -165,7 +166,10 @@ def solve_strokes(points_per_stroke, win=None) -> tuple[str, str] | None:
             for w in win.words(sym_strokes):
                 out.extend(w)
             return out
-    readings = mathink.read(points_per_stroke, symbol_reader=reader)
+    readings = []
+    if columns is not None:
+        readings += mathink.read(points_per_stroke, symbol_reader=reader, columns=columns)
+    readings += [r for r in mathink.read(points_per_stroke, symbol_reader=reader) if r not in readings]
     if win is not None:
         try:
             readings += line_readings(win.words(points_per_stroke))
@@ -193,6 +197,15 @@ def recognize_into(editor, grown_ids: list[str], new_ids: list[str] | None = Non
     pts_grown = [[tuple(p) for p in st.data_state.get("points", [])] for st in grown]
     pts_new = [[tuple(p) for p in scene.strokes_by_id[i].data_state.get("points", [])]
                for i in new_ids if i in scene.strokes_by_id]
+    columns = None
+    page_idx = scene.page_index_of(page_id)
+    boxes = [_box(pts) for pts in pts_grown if pts]
+    grid = None
+    if boxes:
+        cy = sorted((b[1] + b[3]) / 2 for b in boxes)[len(boxes) // 2]
+        grid = scene.grid_at(page_idx, cy)
+        if grid:
+            columns = [int(((b[0] + b[2]) / 2) // grid[0]) for b in boxes]
     want_math = bool(canvas.get("solveEquations"))
     want_text = bool(canvas.get("handwritingToText")) and available()
     use_windows = available()
@@ -206,7 +219,7 @@ def recognize_into(editor, grown_ids: list[str], new_ids: list[str] | None = Non
             if use_windows:
                 win = _Windows()
             if want_math:
-                solved = solve_strokes(pts_grown, win)
+                solved = solve_strokes(pts_grown, win, columns)
                 if solved:
                     out = ("math", solved)
             if out is None and want_text and win is not None:
@@ -228,7 +241,7 @@ def recognize_into(editor, grown_ids: list[str], new_ids: list[str] | None = Non
             return
         kind, value = out
         if kind == "math":
-            _place_answer(editor, page_id, grown_ids, value[1])
+            _place_answer(editor, page_id, grown_ids, value[1], formula=value[0], grid=grid)
         else:
             _replace_with_text(editor, page_id, new_ids, value)
 
@@ -240,45 +253,100 @@ def recognize_into(editor, grown_ids: list[str], new_ids: list[str] | None = Non
     threading.Thread(target=work, daemon=True).start()
 
 
+def _box(points):
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _bounds(strokes):
     xs = [p[0] for st in strokes for p in st.data_state["points"]]
     ys = [p[1] for st in strokes for p in st.data_state["points"]]
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def _place_answer(editor, page_id, stroke_ids, answer: str) -> None:
+def _find_answer(scene, page_id, ids: set, x1: float, y0: float, y1: float, reach: float):
+    """A resposta já posta para esta conta: pelos traços (equationOf) ou, se a conta foi apagada
+    em parte e reescrita, pela posição (logo à direita, na mesma altura)."""
+    for it in scene.items_by_id.values():
+        eq = it.data_state.get("equationOf")
+        if eq and ids & set(eq):
+            return it
+    for it in scene.items_by_id.values():
+        if not it.data_state.get("equationOf") or it.data_state.get("pageID") != page_id:
+            continue
+        st = it.state()
+        f = st["frame"]
+        if f["y"] < y1 and f["y"] + f["height"] > y0 and x1 - reach <= f["x"] <= x1 + reach:
+            return it
+    return None
+
+
+def _place_answer(editor, page_id, stroke_ids, answer: str, formula: str = "", grid=None) -> None:
+    """Resposta em azul à direita da conta. No papel quadriculado, um caractere por quadrado logo
+    depois do "=" (ou de um quadrado vazio, numa equação); fora dele, alinhada pela linha de base
+    dos algarismos e da mesma altura."""
     scene = editor.scene
     canvas = editor.doc["canvas"]
     alive = [scene.strokes_by_id[i] for i in stroke_ids if i in scene.strokes_by_id]
     if not alive:
         return
     x0, y0, x1, y1 = _bounds(alive)
-    size = max(14.0, min(40.0, (y1 - y0) * 0.75))
     ids = set(stroke_ids)
-    for bid, it in list(scene.items_by_id.items()):
-        st = it.data_state
-        if st.get("equationOf") and ids & set(st["equationOf"]):
-            if st.get("text") == answer and set(st["equationOf"]) == ids:
-                return
-            new = it.state()
-            new["text"] = answer
-            new["html"] = ""
-            new["equationOf"] = sorted(ids)
-            new["frame"] = {**new["frame"], "x": x1 + 12, "y": (y0 + y1) / 2 - size * 0.8,
-                            "width": max(60, len(answer) * size * 0.62 + 16)}
-            with scene.change("Resolver conta"):
-                scene.remove_block(bid)
-                scene.add_block(new)
+    old = _find_answer(scene, page_id, ids, x1, y0, y1, grid[0] * 2.5 if grid else max(40.0, y1 - y0))
+    page_idx = scene.page_index_of(page_id)
+    top = page_idx * scene.page_h
+    if grid:
+        cell, oy = grid
+        boxes = [_box(st.data_state["points"]) for st in alive]
+        last = max(int(((b[0] + b[2]) / 2) // cell) for b in boxes)
+        cy = sorted((b[1] + b[3]) / 2 for b in boxes)[len(boxes) // 2]
+        row = int((cy - oy) // cell)
+        col = last + (1 if formula.endswith("=") else 2)
+        compact = answer.replace(" = ", "=").replace("−", "-")
+        state = {"id": old.block_id if old is not None else model.new_id(), "kind": "cells", "pageID": page_id,
+                 "frame": {"x": col * cell, "y": oy + row * cell, "width": cell * len(compact), "height": cell},
+                 "z": old.data_state.get("z", scene.next_z()) if old is not None else scene.next_z(),
+                 "cell": cell, "text": "", "answer": compact, "equationOf": sorted(ids),
+                 "fontName": None if canvas.get("handwritingFont") in (None, "Fonte do texto") else canvas.get("handwritingFont")}
+        if old is not None and old.state().get("answer") == compact and old.state()["frame"]["x"] == col * cell:
+            old.data_state["equationOf"] = sorted(ids)
             return
+        with scene.change("Resolver conta"):
+            if old is not None:
+                scene.remove_block(old.block_id)
+            scene.add_block(state)
+        return
+    from PySide6.QtGui import QFont, QFontMetricsF
     font = canvas.get("handwritingFont")
-    state = {"id": model.new_id(), "kind": "text", "pageID": page_id,
-             "frame": {"x": x1 + 12, "y": (y0 + y1) / 2 - size * 0.8,
-                       "width": max(60, len(answer) * size * 0.62 + 16), "height": size * 1.6},
+    family = None if font in (None, "Fonte do texto") else font
+    f = QFont(family or scene.default_family)
+    f.setPointSizeF(100)
+    fm = QFontMetricsF(f)
+    digit_h = max(10.0, y1 - y0)
+    digit = fm.tightBoundingRect("0").height() or fm.capHeight()
+    size = max(9.0, min(72.0, 100 * 0.95 * digit_h / max(1.0, digit)))
+    k = size / 100
+    pad = 10.0                     # borda da caixa (8) + margem do texto (2)
+    width = fm.horizontalAdvance(answer) * k + 2 * pad + 8
+    state = {"id": old.block_id if old is not None else model.new_id(), "kind": "text", "pageID": page_id,
+             "frame": {"x": x1 + 0.3 * digit_h - pad, "y": y1 - pad - fm.ascent() * k,
+                       "width": max(40.0, width), "height": fm.height() * k + 2 * pad},
              "z": scene.next_z(), "text": answer, "html": "", "foreground": "#2563EB",
-             "fontName": None if font in (None, "Fonte do texto") else font, "fontSize": round(size, 1),
-             "equationOf": sorted(ids)}
+             "fontName": family, "fontSize": round(size, 1), "equationOf": sorted(ids)}
+    if old is not None and old.data_state.get("text") == answer and set(old.data_state.get("equationOf") or []) == ids:
+        return
     with scene.change("Resolver conta"):
-        scene.add_block(state)
+        if old is not None:
+            scene.remove_block(old.block_id)
+        it = scene.add_block(state)
+        # acerto fino: a linha de base real do texto na linha de base dos algarismos
+        try:
+            line = it.text.document().firstBlock().layout().lineAt(0)
+            base = it.mapToScene(it.text.pos() + QPointF(0, line.y() + line.ascent())).y()
+            it.setPos(it.pos() + QPointF(0, (top + y1) - base))
+        except Exception:
+            pass
 
 
 def _replace_with_text(editor, page_id, stroke_ids, text: str) -> None:

@@ -58,9 +58,12 @@ class StoryItem(EditableText):
         m = c._text_margins
         doc = self.document()
         layout = doc.documentLayout()
-        last = layout.blockBoundingRect(doc.lastBlock())
-        line = max(18.0, last.height() / max(1, doc.lastBlock().layout().lineCount() or 1))
-        bottom = last.bottom() + line
+        # só onde já há texto (com nota vazia, a primeira linha); fora disso, caixa no clique
+        block = doc.lastBlock()
+        while block.isValid() and block != doc.firstBlock() and not block.text().strip():
+            block = block.previous()
+        line = QFontMetricsF(doc.defaultFont()).lineSpacing()
+        bottom = max(layout.blockBoundingRect(block).bottom(), m["top"] + line + 4)
         return self.mapRectToScene(QRectF(m["left"] - 6, 0, c.page_w - m["left"] - m["right"] + 12, bottom))
 
 
@@ -481,6 +484,22 @@ class CanvasScene(QGraphicsScene):
     def page_at_y(self, y: float) -> int:
         n = max(1, len(self.doc["pages"]))
         return max(0, min(n - 1, int(y // self.page_h)))
+
+    def grid_at(self, index: int, y: float):
+        """(lado do quadrado, origem y na página) se o ponto (y na página) cai em papel
+        quadriculado; senão None."""
+        pages = self.doc["pages"]
+        page = pages[index] if 0 <= index < len(pages) else {}
+        paper = page.get("paper") or self.doc["canvas"].get("paper")
+        if not paper or paper.get("kind") != "grid":
+            return None
+        spacing = max(0.3 * model.CM, min(2 * model.CM, float(paper.get("spacing") or model.RULED_LINE)))
+        half = paper.get("half")
+        if half == "top":
+            return (spacing, 0.0) if y < self.page_h / 2 else None
+        if half == "bottom":
+            return (spacing, self.page_h / 2) if y >= self.page_h / 2 else None
+        return spacing, 0.0
 
     def page_rect(self, index: int) -> QRectF:
         return QRectF(0, index * self.page_h, self.page_w, self.page_h)

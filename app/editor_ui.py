@@ -237,15 +237,16 @@ class FormatBar(QFrame):
 
 
 class Tile(QToolButton):
-    def __init__(self, icon: str, title: str):
+    def __init__(self, icon: str, title: str, tall: bool = False):
         super().__init__()
         self.setIcon(icons.icon(icon, theme.INK, theme.ACCENT))
         self.setIconSize(QSize(24, 24))
-        self.setText(title)
-        self.setToolTip(title)
-        self.setAccessibleName(title)
+        self.setText(title)                  # "\n" quebra o nome em duas linhas
+        plain = title.replace("\n", " ")
+        self.setToolTip(plain)
+        self.setAccessibleName(plain)
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-        self.setFixedSize(74, 62)
+        self.setFixedSize(74, 76 if tall else 62)
         self.setFont(theme.ui_font(8))
         self.setStyleSheet("QToolButton { background: #F4F6F8; border: 1px solid #E3E7EB; border-radius: 10px; padding: 4px 2px; }"
                            "QToolButton:hover { background: #EAF0F7; border-color: #C9D7E8; }"
@@ -344,17 +345,17 @@ class ToolsPanel(QScrollArea):
         ins = []
         for icon, title, fn in (("textbox", "Texto", ed.insert_text_box), ("table", "Tabela", ed.insert_table),
                                 ("image", "Imagem", ed.choose_images), ("pdf", "PDF", ed.choose_pdf),
-                                ("pdf-annotate", "PDF para anotar", ed.choose_pdf_annotate), ("video", "Vídeo", ed.choose_video),
-                                ("mic", "Gravar áudio", ed.record_audio), ("wave", "Arquivo de áudio", ed.choose_audio),
+                                ("pdf-annotate", "PDF para\nanotar", ed.choose_pdf_annotate), ("video", "Vídeo", ed.choose_video),
+                                ("mic", "Gravar\náudio", ed.record_audio), ("wave", "Arquivo\nde áudio", ed.choose_audio),
                                 ("sticker", "Sticker", ed.choose_sticker), ("calendar", "Calendário", ed.insert_calendar),
                                 ("connector", "Conexão", lambda: ed.set_tool("connector"))):
-            t = Tile(icon, title)
+            t = Tile(icon, title, tall=True)
             t.clicked.connect(lambda _=False, f=fn: f())
             if title == "Conexão":
                 t.setCheckable(True)
                 self.tool_buttons["connector"] = t
             ins.append(t)
-        sticky = Tile("sticky", "Post-it")
+        sticky = Tile("sticky", "Post-it", tall=True)
         menu = QMenu(sticky)
         for title, value in model.STICKY_COLORS:
             menu.addAction(swatch_icon(value), title).triggered.connect(lambda _=False, v=value: ed.insert_sticky(v))
@@ -397,11 +398,11 @@ class ToolsPanel(QScrollArea):
 
         header("Página")
         pg = []
-        for icon, title, fn in (("header", "Cabeçalho e rodapé", lambda: ed.header_footer(0)),
-                                ("number", "Numerar páginas", lambda: ed.header_footer(2)),
-                                ("paper", "Papel", ed.paper), ("page-size", "Tamanho e margens", ed.page_setup),
-                                ("plus", "Nova página", ed.add_page)):
-            t = Tile(icon, title)
+        for icon, title, fn in (("header", "Cabeçalho\ne rodapé", lambda: ed.header_footer(0)),
+                                ("number", "Numerar\npáginas", lambda: ed.header_footer(2)),
+                                ("paper", "Papel", ed.paper), ("page-size", "Tamanho e\nmargens", ed.page_setup),
+                                ("plus", "Nova\npágina", ed.add_page)):
+            t = Tile(icon, title, tall=True)
             t.clicked.connect(lambda _=False, f=fn: f())
             pg.append(t)
         grid(pg)

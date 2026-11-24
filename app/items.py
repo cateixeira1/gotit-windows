@@ -1227,10 +1227,161 @@ def _edge_point(item: BlockItem, center: QPointF, toward: QPointF) -> QPointF:
     return best[1] if best else center
 
 
+class CellsItem(BlockItem):
+    """Conta no papel quadriculado: um caractere por quadrado. O que a pessoa digita fica em
+    preto; a resposta, em azul, ocupa os quadrados seguintes ao "=" (ou vem depois de um
+    quadrado vazio, numa equação). Também guarda a resposta de uma conta escrita à mão."""
+    kind = "cells"
+    resizable = False
+    rotatable = False
+    min_w, min_h = 4.0, 4.0
+    SHOW = {".": "·", "*": "×", "-": "−"}
+
+    def __init__(self, scene, state):
+        self.editing = False
+        self.cursor = 0
+        super().__init__(scene, state)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
+        self.fit()
+
+    @property
+    def cell(self) -> float:
+        return float(self.data_state.get("cell") or 20)
+
+    def chars(self) -> list[tuple[str, bool]]:
+        out = [(c, False) for c in self.data_state.get("text") or ""]
+        return out + [(c, True) for c in self.data_state.get("answer") or ""]
+
+    def fit(self) -> None:
+        n = max(1, len(self.chars()), self.cursor + 1 if self.editing else 0)
+        self.prepareGeometryChange()
+        self.w, self.h = self.cell * n, self.cell
+        self.setTransformOriginPoint(self.w / 2, self.h / 2)
+        self.update()
+
+    def read_state(self, state):
+        self.fit()
+
+    def paint_content(self, painter):
+        cell = self.cell
+        if self.editing:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(37, 99, 235, 28))
+            painter.drawRect(QRectF(0, 0, self.w, cell))
+            painter.setPen(QPen(ACCENT, max(0.8, cell / 14)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(self.cursor * cell, 0, cell, cell))
+        f = QFont(self.data_state.get("fontName") or self.canvas.default_family)
+        f.setPixelSize(100)
+        fm = QFontMetricsF(f)
+        digit = fm.tightBoundingRect("0").height() or fm.capHeight()
+        k = 0.6 * cell / max(1.0, digit)
+        ink = qcolor(self.data_state.get("foreground"), "#1F2933")
+        blue = qcolor(self.data_state.get("answerColor"), "#2563EB")
+        for i, (c, answer) in enumerate(self.chars()):
+            if c == " ":
+                continue
+            ch = self.SHOW.get(c, c)
+            path = QPainterPath()
+            path.addText(QPointF(0, 0), f, ch)
+            adv = fm.horizontalAdvance(ch)
+            painter.save()
+            painter.translate(i * cell + cell / 2 - adv * k / 2, cell / 2 + digit * k / 2)
+            painter.scale(k, k)
+            painter.fillPath(path, blue if answer else ink)
+            painter.restore()
+
+    def paint_selection(self, painter):
+        if not self.editing:
+            super().paint_selection(painter)
+
+    def search_text(self) -> str:
+        return (self.data_state.get("text") or "") + " " + (self.data_state.get("answer") or "")
+
+    # ------------------------------------------------------------------ digitação
+    def column_at(self, scene_pos: QPointF) -> int:
+        return max(0, int(self.mapFromScene(scene_pos).x() // self.cell))
+
+    def mousePressEvent(self, event):
+        ed = self.canvas.editor
+        if event.button() == Qt.MouseButton.LeftButton and ed is not None and ed.tool == "select" \
+                and not self.data_state.get("equationOf"):
+            ed.start_cells(self, self.column_at(event.scenePos()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def start_editing(self, column: int = 0) -> None:
+        self.editing = True
+        self.cursor = max(0, min(column, len(self.data_state.get("text") or "")))
+        self.fit()
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def stop_editing(self) -> None:
+        if not self.editing:
+            return
+        self.editing = False
+        self.clearFocus()
+        self.fit()
+        ed = self.canvas.editor
+        if ed is not None:
+            ed.cells_done(self)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        if self.editing and event.reason() != Qt.FocusReason.PopupFocusReason:
+            self.stop_editing()
+
+    def set_text(self, text: str) -> None:
+        import mathsolve
+        self.data_state["text"] = text
+        self.data_state["answer"] = mathsolve.cells_answer(text)
+        self.fit()
+        self.canvas.item_moved(self)
+        if self.canvas.editor is not None:
+            self.canvas.editor.content_changed()
+
+    def keyPressEvent(self, event):
+        if not self.editing:
+            return super().keyPressEvent(event)
+        text = self.data_state.get("text") or ""
+        key = event.key()
+        if key in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
+            self.stop_editing()
+        elif key == Qt.Key.Key_Backspace:
+            if self.cursor > 0:
+                self.cursor -= 1
+                self.set_text(text[:self.cursor] + text[self.cursor + 1:])
+        elif key == Qt.Key.Key_Delete:
+            self.set_text(text[:self.cursor] + text[self.cursor + 1:])
+        elif key == Qt.Key.Key_Left:
+            self.cursor = max(0, self.cursor - 1)
+            self.fit()
+        elif key == Qt.Key.Key_Right:
+            self.cursor = min(len(text), self.cursor + 1)
+            self.fit()
+        elif key == Qt.Key.Key_Home:
+            self.cursor = 0
+            self.fit()
+        elif key == Qt.Key.Key_End:
+            self.cursor = len(text)
+            self.fit()
+        elif event.text() and event.text().isprintable() and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            ch = event.text()[0]
+            # cada tecla ocupa o quadrado do cursor (escreve por cima) e o cursor anda um
+            new = text[:self.cursor] + ch + text[self.cursor + 1:]
+            self.cursor += 1
+            self.set_text(new)
+        else:
+            return super().keyPressEvent(event)
+        event.accept()
+
+
 ITEM_CLASSES = {
     "text": TextBoxItem, "table": TableItem, "shape": ShapeItem, "sticky": StickyItem, "transcript": TranscriptItem,
     "line": LineItem, "calendar": CalendarItem, "sticker": StickerItem, "image": ImageItem, "pdf": PdfItem,
-    "audio": AudioItem, "video": VideoItem, "noteRef": NoteRefItem,
+    "audio": AudioItem, "video": VideoItem, "noteRef": NoteRefItem, "cells": CellsItem,
 }
 
 

@@ -92,9 +92,10 @@ class NoteCard(QWidget):
     dropped_on = Signal(str, str)        # arrastada, alvo
     menu = Signal(str, QPoint)
 
-    def __init__(self, info, image: QImage | None, active: bool):
+    def __init__(self, info, image: QImage | None, active: bool, folder: str = ""):
         super().__init__()
         self.info = info
+        self.folder = folder
         self.image = image
         self.active = active
         self.hot = False
@@ -102,7 +103,7 @@ class NoteCard(QWidget):
         self.setFixedSize(92, 158)
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(info.title)
+        self.setToolTip(info.title + (f" (pasta {folder})" if folder else ""))
         self.setAccessibleName(info.title)
 
     def paintEvent(self, e):
@@ -146,6 +147,16 @@ class NoteCard(QWidget):
         p.setFont(f)
         fm = QFontMetricsF(f)
         title = self.info.title or "Sem título"
+        if self.folder:
+            # nota de uma pasta: o nome numa linha e a pasta embaixo, entre parênteses, menor
+            p.drawText(QRectF(2, 124, 88, 15), Qt.AlignmentFlag.AlignHCenter,
+                       fm.elidedText(title, Qt.TextElideMode.ElideRight, 88))
+            small = theme.ui_font(7.5)
+            p.setFont(small)
+            p.setPen(QColor(theme.MUTED))
+            p.drawText(QRectF(2, 139, 88, 14), Qt.AlignmentFlag.AlignHCenter,
+                       QFontMetricsF(small).elidedText(f"({self.folder})", Qt.TextElideMode.ElideMiddle, 88))
+            return
         lines = _wrap(title, fm, 88, 2)
         y = 124
         for ln in lines:
@@ -361,12 +372,14 @@ class Sidebar(QWidget):
             r.customContextMenuRequested.connect(lambda pos, fid=f.id, w=r: self._folder_menu(fid, w.mapToGlobal(pos)))
         lay.addWidget(g)
         for kind, title in (("note", "Notas"), ("web", "Teias")):
-            recent = self.store.notes(kind=kind, folder_id=self.folder_id, limit=RECENT_LIMIT)
+            # no início: as 9 mais recentes de todas as pastas; dentro de uma pasta, as dela
+            scope = "*" if self.folder_id is None else self.folder_id
+            recent = self.store.notes(kind=kind, folder_id=scope, limit=RECENT_LIMIT)
             if not recent:
                 continue
             self._header(lay, title)
-            lay.addWidget(self._grid(recent))
-            total = len(self.store.notes(kind=kind, folder_id=self.folder_id))
+            lay.addWidget(self._grid(recent, show_folder=self.folder_id is None))
+            total = len(self.store.notes(kind=kind, folder_id=scope))
             all_row = Row("chevron", "Todas as Notas" if kind == "note" else "Todas as Teias", str(total))
             all_row.setStyleSheet(all_row.styleSheet() + f"#row {{ background: {theme.CARD}; border: 1px solid {theme.LINE}; }}")
             all_row.clicked.connect(lambda k=kind: self.browse(k))
@@ -385,11 +398,11 @@ class Sidebar(QWidget):
         back = g.add(Row("back", f"Voltar para {self._folder_name(self.folder_id)}"))
         back.clicked.connect(lambda: self.browse(None))
         lay.addWidget(g)
-        notes = self.store.notes(kind=kind, folder_id=self.folder_id)
+        notes = self.store.notes(kind=kind, folder_id="*" if self.folder_id is None else self.folder_id)
         word = ("Teia" if len(notes) == 1 else "Teias") if kind == "web" else ("nota" if len(notes) == 1 else "notas")
         self._header(lay, f"{len(notes)} {word}")
         if notes:
-            lay.addWidget(self._grid(notes))
+            lay.addWidget(self._grid(notes, show_folder=self.folder_id is None))
         else:
             empty = QLabel("Nenhuma Teia aqui." if kind == "web" else "Nenhuma nota aqui.")
             empty.setStyleSheet(f"color: {theme.MUTED}; padding: 8px;")
@@ -411,14 +424,21 @@ class Sidebar(QWidget):
                 g2.add(ResultRow(h, "", lambda hit=h: self.window.open_hit(hit, query)))
             lay.addWidget(g2)
 
-    def _grid(self, notes) -> QWidget:
+    def _grid(self, notes, show_folder: bool = False) -> QWidget:
+        names = {}
+        if show_folder:
+            for n in notes:
+                if n.folder_id and n.folder_id not in names:
+                    f = self.store.folder(n.folder_id)
+                    names[n.folder_id] = f.name if f else ""
         w = QWidget()
         grid = QGridLayout(w)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(4)
         grid.setVerticalSpacing(6)
         for i, n in enumerate(notes):
-            card = NoteCard(n, self.window.thumbs.get(n.id, n.revision), n.id == self.active_id)
+            card = NoteCard(n, self.window.thumbs.get(n.id, n.revision), n.id == self.active_id,
+                            names.get(n.folder_id, "") if n.folder_id else "")
             card.clicked.connect(self.window.open_note)
             card.dropped_on.connect(self._merge)
             card.menu.connect(self._note_menu)

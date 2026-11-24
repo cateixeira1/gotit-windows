@@ -205,28 +205,54 @@ def erase(state: dict, cx: float, cy: float, radius: float, whole: bool) -> list
             return None
     if whole:
         return []
-    if hit is None:
-        hit = [False] * len(pts)
-        for i, (a, b) in enumerate(zip(pts, pts[1:])):
-            if _seg_dist(cx, cy, a, b) <= reach:
-                hit[i] = hit[i + 1] = True
-    pieces, cur = [], []
-    for p, h in zip(pts, hit):
-        if h:
-            if len(cur) >= 2:
-                pieces.append(cur)
-            cur = []
-        else:
-            cur.append(p)
-    if len(cur) >= 2:
-        pieces.append(cur)
     out = []
-    for piece in pieces:
+    for piece in cut_polyline(pts, cx, cy, reach):
         s = copy.deepcopy(state)
         s["id"] = model.new_id()
         s["points"] = piece
         out.append(s)
     return out
+
+
+def cut_polyline(pts, cx: float, cy: float, reach: float) -> list[list]:
+    """Tira da linha só o trecho dentro do círculo da borracha (cortando no ponto exato da
+    borda, mesmo num segmento longo de dois pontos). Devolve os pedaços que sobram."""
+    def lerp(a, b, t):
+        return [a[i] + (b[i] - a[i]) * t for i in range(len(a))]
+
+    def inside(p):
+        return math.hypot(p[0] - cx, p[1] - cy) <= reach
+    pieces, cur = [], []
+    if pts and not inside(pts[0]):
+        cur.append(list(pts[0]))
+    for a, b in zip(pts, pts[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        fx, fy = a[0] - cx, a[1] - cy
+        A = dx * dx + dy * dy
+        hits = []
+        if A > 1e-12:
+            B = 2 * (fx * dx + fy * dy)
+            C = fx * fx + fy * fy - reach * reach
+            disc = B * B - 4 * A * C
+            if disc > 0:
+                r = math.sqrt(disc)
+                hits = [t for t in sorted(((-B - r) / (2 * A), (-B + r) / (2 * A))) if 0 < t < 1]
+        for t in hits:
+            p = lerp(a, b, t)
+            mid = lerp(a, b, max(0.0, t - 1e-6))
+            if not inside(mid):          # saindo do lado de fora → entrando no círculo
+                cur.append(p)
+                if len(cur) >= 2:
+                    pieces.append(cur)
+                cur = []
+            else:                        # saindo de dentro → começa pedaço novo
+                cur = [p]
+        if not inside(b):
+            cur.append(list(b))
+    if len(cur) >= 2:
+        pieces.append(cur)
+    # pedaços minúsculos (menos de 1 pt) somem
+    return [pc for pc in pieces if sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(pc, pc[1:])) >= 1.0]
 
 
 def _seg_dist(px, py, a, b) -> float:

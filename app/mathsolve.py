@@ -109,8 +109,9 @@ def normalize_formula(raw: str) -> str | None:
     text = raw.strip()
     if "=" not in text or len(text) > 120:
         return None
-    for a, b in (("×", "*"), ("·", "*"), ("•", "*"), ("÷", "/"), (":", "/"), ("−", "-"), ("–", "-"), ("—", "-"),
-                 ("X", "x"), ("²", "^2"), (",", ".")):
+    # como na escola brasileira: o ponto é o sinal de vezes e a vírgula separa os decimais
+    for a, b in (("×", "*"), ("·", "*"), ("•", "*"), (".", "*"), ("÷", "/"), (":", "/"), ("−", "-"), ("–", "-"),
+                 ("—", "-"), ("X", "x"), ("²", "^2"), (",", ".")):
         text = text.replace(a, b)
     text = "".join(text.split())
     digit_like = set("0123456789+-*/=^().")
@@ -237,3 +238,16 @@ def answer(formula: str) -> str | None:
 def answer_text(raw: str) -> str | None:
     formula = normalize_formula(raw)
     return answer(formula) if formula else None
+
+
+def cells_answer(text: str) -> str:
+    """Resposta para uma conta digitada nos quadrados: logo depois do "=" se a conta termina
+    nele ("3.4=" → "12"); numa equação, depois de um quadrado vazio ("2x=6" → " x=3")."""
+    t = (text or "").strip()
+    if "=" not in t:
+        return ""
+    ans = answer_text(t)
+    if not ans:
+        return ""
+    compact = ans.replace(" = ", "=").replace("−", "-")
+    return compact if t.endswith("=") else " " + compact

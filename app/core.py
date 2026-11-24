@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Got It!"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 APP_USER_MODEL_ID = "ColorSoftware.GotIt"
 ORG_NAME = "Color Software"
 SETTINGS_APP = "Got It"

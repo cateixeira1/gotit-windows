@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import json
 import re
 import time
@@ -62,7 +63,11 @@ def ink_groups(scene, pending: list[str]) -> list[tuple[list[str], list[str]]]:
         if overlap < 0.3 * min(ha, hb) - 1.0:
             return False
         gap = max(B[0] - A[2], A[0] - B[2], 0.0)
-        return gap <= max(18.0, 1.1 * max(ha, hb))
+        limit = max(18.0, 1.1 * max(ha, hb))
+        grid = scene.grid_at(scene.page_index_of(page[a]), (A[1] + A[3]) / 2)
+        if grid:
+            limit = max(limit, 1.3 * grid[0])     # quadriculado: um símbolo por quadrado, com folga
+        return gap <= limit
     seen: set = set()
     groups = []
     for start in pending:
@@ -550,27 +555,45 @@ class Editor(QWidget):
             sc.add_block(state)
 
     def erase_at(self, pos: QPointF) -> None:
-        """Borracha: apaga tinta (o traço inteiro ou a parte tocada) e também as formas, linhas e
-        conexões que nasceram de um desenho reconhecido."""
+        """Borracha: apaga a tinta só onde passa (ou o traço inteiro, se escolhido), as formas,
+        linhas e conexões que vieram de desenho reconhecido, e as respostas das contas."""
         sc = self.scene
         r = self.eraser_radius / max(0.3, self.view.transform().m11())
         box = QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
+        renamed: dict[str, list[str]] = {}
         for sid, st in list(sc.strokes_by_id.items()):
             if not st.sceneBoundingRect().intersects(box):
                 continue
-            local = pos - st.pos()
             state = st.state()
-            result = ink.erase(state, local.x(), local.y() - (sc.page_index_of(state.get("pageID")) * sc.page_h - st.pos().y()),
-                               r, self.eraser_whole)
+            top = sc.page_index_of(state.get("pageID")) * sc.page_h
+            result = ink.erase(state, pos.x(), pos.y() - top, r, self.eraser_whole)
             if result is None:
                 continue
             sc.remove_stroke(sid)
+            renamed[sid] = [piece["id"] for piece in result]
             for piece in result:
                 sc.add_stroke(piece)
         circle = QPainterPath()
         circle.addEllipse(pos, r, r)
         for bid, it in list(sc.items_by_id.items()):
-            if not it.data_state.get("fromInk") or not it.sceneBoundingRect().intersects(box):
+            st = it.data_state
+            if not it.sceneBoundingRect().intersects(box):
+                continue
+            if st.get("equationOf") and not getattr(it, "editing", False):
+                sc.remove_block(bid)
+                continue
+            if isinstance(it, items_mod.CellsItem) and not it.editing:
+                # conta digitada nos quadrados: some o caractere do quadrado tocado
+                col = it.column_at(pos)
+                text = st.get("text") or ""
+                if col < len(text):
+                    new = (text[:col] + " " + text[col + 1:]).rstrip()
+                    if new.strip():
+                        it.set_text(new)
+                    else:
+                        sc.remove_block(bid)
+                continue
+            if not st.get("fromInk"):
                 continue
             if isinstance(it, items_mod.LineItem):
                 path = QPainterPath(it.p1)
@@ -580,12 +603,66 @@ class Editor(QWidget):
             else:
                 continue
             stroker = QPainterPathStroker()
-            stroker.setWidth(float(it.data_state.get("lineWidth") or 2) + 2)
-            if it.mapToScene(stroker.createStroke(path)).intersects(circle):
+            stroker.setWidth(float(st.get("lineWidth") or 2) + 2)
+            if not it.mapToScene(stroker.createStroke(path)).intersects(circle):
+                continue
+            if self.eraser_whole:
                 sc.remove_block(bid)
+            elif isinstance(it, items_mod.LineItem):
+                self._cut_line(it, pos, r)
+            elif (st.get("text") or "").strip() or st.get("fill"):
+                sc.remove_block(bid)             # forma com texto ou cor: sai inteira
+            else:
+                self._shape_to_ink(it, pos, r)
         for rid, conn in list(sc.connectors.items()):
             if conn.data_state.get("fromInk") and conn.sceneBoundingRect().intersects(box) and conn.shape().intersects(circle):
                 sc.remove_connector(rid)
+        # respostas acompanham os traços da conta; conta toda apagada leva a resposta junto
+        for bid, it in list(sc.items_by_id.items()):
+            eq = it.data_state.get("equationOf")
+            if not eq:
+                continue
+            if renamed and set(eq) & set(renamed):
+                it.data_state["equationOf"] = sorted({n for i in eq for n in renamed.get(i, [i])})
+                eq = it.data_state["equationOf"]
+            if not any(i in sc.strokes_by_id for i in eq):
+                sc.remove_block(bid)
+
+    def _cut_line(self, it, pos: QPointF, r: float) -> None:
+        sc = self.scene
+        st = it.state()
+        top = sc.page_index_of(st.get("pageID")) * sc.page_h
+        a, b = it.mapToScene(it.p1), it.mapToScene(it.p2)
+        pieces = ink.cut_polyline([[a.x(), a.y() - top], [b.x(), b.y() - top]], pos.x(), pos.y() - top,
+                                  r + float(st.get("lineWidth") or 2) / 2)
+        sc.remove_block(st["id"])
+        for piece in pieces:
+            (x1, y1), (x2, y2) = piece[0][:2], piece[-1][:2]
+            x0, y0 = min(x1, x2), min(y1, y2)
+            new = copy.deepcopy(st)
+            new["id"] = model.new_id()
+            new["frame"] = {"x": x0, "y": y0, "width": max(1, abs(x2 - x1)), "height": max(1, abs(y2 - y1))}
+            new["points"] = [[x1 - x0, y1 - y0], [x2 - x0, y2 - y0]]
+            if new.get("shape") == "arrow" and math.hypot(x2 - (b.x()), y2 + top - b.y()) > 0.5:
+                new["shape"] = "line"            # só o pedaço com a ponta continua seta
+            sc.add_block(new)
+
+    def _shape_to_ink(self, it, pos: QPointF, r: float) -> None:
+        """Forma desenhada (sem texto) apagada em parte: o contorno volta a ser tinta e perde só
+        o trecho onde a borracha passou."""
+        sc = self.scene
+        st = it.state()
+        top = sc.page_index_of(st.get("pageID")) * sc.page_h
+        poly = it.mapToScene(it.outline()).toSubpathPolygons()
+        sc.remove_block(st["id"])
+        width = float(st.get("lineWidth") or 2)
+        for pg in poly:
+            pts = [[p.x(), p.y() - top, 0.5] for p in pg]
+            if len(pts) < 2:
+                continue
+            base = ink.new_stroke_state(st.get("pageID"), "pen", st.get("stroke") or "#1F2933", width, pts)
+            for piece in ink.erase(base, pos.x(), pos.y() - top, r, False) or [base]:
+                sc.add_stroke(piece)
 
     # ------------------------------------------------------------------ escrita e contas
     def _ink_pause(self) -> None:
@@ -1468,8 +1545,8 @@ class Editor(QWidget):
     def stop_all_editing(self) -> None:
         if self.scene is None:
             return
-        for it in self.scene.items_by_id.values():
-            if isinstance(it, items_mod.TextBlock) and it.editing:
+        for it in list(self.scene.items_by_id.values()):
+            if getattr(it, "editing", False) and hasattr(it, "stop_editing"):
                 it.stop_editing()
 
     def click_off_story(self, pos: QPointF) -> bool:
@@ -1484,22 +1561,57 @@ class Editor(QWidget):
             return False
         if sc.story.text_region().contains(pos):
             return False
-        busy = [it for it in sc.items_by_id.values() if isinstance(it, items_mod.TextBlock) and it.editing]
+        busy = [it for it in sc.items_by_id.values() if getattr(it, "editing", False)]
         if sc.selectedItems() or busy:
             sc.clearSelection()
             self.stop_all_editing()
             sc.clearFocus()
             return True
         self.stop_all_editing()
+        grid = sc.grid_at(page, pos.y() - top)
+        if grid and self.doc["canvas"].get("gridTyping", True):
+            # papel quadriculado: digita quadrado a quadrado a partir do quadrado clicado
+            cell, oy = grid
+            col = int(pos.x() // cell)
+            row = int((pos.y() - top - oy) // cell)
+            sc.begin_change()
+            state = {"id": model.new_id(), "kind": "cells", "pageID": sc.page_id_at(page),
+                     "frame": {"x": col * cell, "y": oy + row * cell, "width": cell, "height": cell},
+                     "z": sc.next_z(), "cell": cell, "text": "", "answer": ""}
+            item = sc.add_block(state)
+            item.start_editing(0)
+            return True
+        m = sc._text_margins
         size = float(sc.default_size or 16)
-        w, h = 240.0, max(36.0, size * 2.2)
-        x = max(8.0, min(pos.x() - 8, sc.page_w - w - 8))
-        y = max(8.0, min(pos.y() - top - h / 2, sc.page_h - h - 8))
+        h = max(36.0, size * 2.2)
+        pad = 10.0                       # borda interna da caixa: o cursor fica no ponto clicado
+        left, right = m["left"], sc.page_w - m["right"]
+        x = max(left, min(pos.x() - pad, right - 80))
+        w = max(80.0, min(240.0, right - x))
+        y = max(m["top"], min(pos.y() - top - h / 2, sc.page_h - m["bottom"] - h))
         item = self._add("text", w, h, "Caixa de texto", at=QPointF(x + w / 2, top + y + h / 2), select=False,
                          text="", html="", fontSize=sc.default_size, autoBox=True)
         item.setSelected(True)
         item.start_editing()
         return True
+
+    def start_cells(self, item, column: int) -> None:
+        """Clique numa conta do papel quadriculado: volta a digitar nela a partir do quadrado."""
+        sc = self.scene
+        for it in list(sc.items_by_id.values()):
+            if it is not item and getattr(it, "editing", False):
+                it.stop_editing()
+        sc.clearSelection()
+        sc.begin_change()
+        item.start_editing(column)
+
+    def cells_done(self, item) -> None:
+        sc = self.scene
+        if sc is None:
+            return
+        if not (item.data_state.get("text") or "").strip() and not item.data_state.get("answer"):
+            sc.remove_block(item.block_id)
+        sc.end_change("Conta nos quadrados")
 
     def drop_empty_box(self, block_id: str) -> None:
         """Caixa aberta por um clique e deixada vazia: some, junto com o passo de desfazer dela."""
@@ -1690,7 +1802,7 @@ class Editor(QWidget):
         if sc is None:
             return False
         focus = sc.focusItem()
-        if isinstance(focus, EditableText):
+        if isinstance(focus, EditableText) or (isinstance(focus, items_mod.CellsItem) and focus.editing):
             return False
         key = event.key()
         selected = self.selected_blocks() + self.selected_strokes()
@@ -1926,17 +2038,20 @@ class Editor(QWidget):
             with self.scene.change("Cabeçalho e rodapé"):
                 self.doc["canvas"] = dlg.result_canvas(self.doc["canvas"])
                 self.scene.apply_page_format()
+            self.scene.update()
+            self.scene.update()
 
     def paper(self, page: int | None = None) -> None:
         idx = self.view.current_page() if page is None else page
         current = (self.doc["pages"][idx].get("paper") if idx < len(self.doc["pages"]) else None) or self.doc["canvas"].get("paper")
-        dlg = dialogs.PaperDialog(current, self)
+        dlg = dialogs.PaperDialog(current, self, self.doc["canvas"].get("gridTyping", True))
         if page is not None:
             dlg.scope.setCurrentIndex(1)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         paper, scope = dlg.value()
         with self.scene.change("Papel"):
+            self.doc["canvas"]["gridTyping"] = dlg.grid_typing.isChecked()
             if scope == "note":
                 self.doc["canvas"]["paper"] = paper
                 for p in self.doc["pages"]:
