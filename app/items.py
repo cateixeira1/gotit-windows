@@ -10,7 +10,7 @@ import copy
 import math
 from datetime import date
 
-from PySide6.QtCore import QLineF, QPointF, QRectF, QSizeF, Qt
+from PySide6.QtCore import QLineF, QPointF, QRectF, QSizeF, Qt, QTimer
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QPainter, QPainterPath,
                            QPainterPathStroker, QPen, QPolygonF, QTextCursor, QTextOption, QTextTableFormat,
                            QTextLength, QTextFrameFormat, QTextCharFormat)
@@ -420,6 +420,10 @@ class TextBlock(BlockItem):
         c.clearSelection()
         self.text.setTextCursor(c)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        if self.data_state.get("autoBox"):
+            ed = getattr(self.canvas, "editor", None)
+            if ed is not None:
+                QTimer.singleShot(0, lambda bid=self.block_id: ed.drop_empty_box(bid))
 
     @property
     def editing(self) -> bool:

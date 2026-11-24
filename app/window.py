@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
@@ -29,7 +29,7 @@ class EmptyState(QWidget):
         lay.addStretch(2)
         logo = QLabel()
         from PySide6.QtGui import QPixmap
-        pm = QPixmap(str(core.asset_path("icon-256.png")))
+        pm = QPixmap(str(core.asset_path("logo-rounded.png")))
         if not pm.isNull():
             logo.setPixmap(pm.scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
         self.ai = intelligence.Intelligence(self)
         self.setWindowTitle(core.APP_NAME)
         self.setWindowIcon(QIcon(str(core.asset_path("GotIt.ico"))))
-        self.resize(1440, 920)
+        self.place_on_screen()
         central = QWidget()
         self.setCentralWidget(central)
         lay = QHBoxLayout(central)
@@ -258,8 +258,8 @@ class MainWindow(QMainWindow):
     def explain_handwriting(self) -> None:
         self.ai.explain_handwriting()
 
-    def recognize_handwriting(self, editor, strokes) -> None:
-        self.ai.recognize_handwriting(editor, strokes)
+    def recognize_handwriting(self, editor, stroke_ids, new_ids=None) -> None:
+        self.ai.recognize_handwriting(editor, stroke_ids, new_ids)
 
     def transcribe(self, editor, item) -> None:
         self.ai.transcribe(editor, item)
@@ -273,11 +273,25 @@ class MainWindow(QMainWindow):
     def search_by_meaning(self, query: str, exclude: set) -> list:
         return self.ai.search_by_meaning(query, exclude)
 
+    def place_on_screen(self) -> None:
+        """Abre numa janela menor que a tela, centralizada, com margem dos quatro lados."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1280, 800)
+            return
+        area = screen.availableGeometry()
+        w = min(1440, int(area.width() * 0.84))
+        h = min(940, int(area.height() * 0.86))
+        self.resize(max(900, w), max(600, h))
+        frame = self.frameGeometry()
+        frame.moveCenter(area.center())
+        self.move(frame.topLeft())
+
     # ------------------------------------------------------------------ fechar
     def closeEvent(self, e):
         self.editor.save_now()
         for t in (self._sidebar_refresh, self.sidebar.search_timer, self.gc_timer, self.editor.save_timer,
-                  self.editor.thumb_timer, self.editor.state_timer, self.editor.hw_timer):
+                  self.editor.thumb_timer, self.editor.state_timer, self.editor.ink_timer):
             t.stop()
         self.editor.media.stop()
         self.editor.close_document()

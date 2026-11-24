@@ -262,9 +262,12 @@ class Sidebar(QWidget):
         head.setContentsMargins(16, 12, 10, 4)
         logo = QLabel()
         import core
-        pm = QPixmap(str(core.asset_path("icon-256.png")))
+        pm = QPixmap(str(core.asset_path("logo-rounded.png")))
         if not pm.isNull():
-            pm = pm.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            dpr = max(1.0, self.devicePixelRatioF())
+            pm = pm.scaled(int(30 * dpr), int(30 * dpr), Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
             logo.setPixmap(pm)
         self.title = QLabel("Got It!")
         self.title.setFont(theme.ui_font(15, True))
@@ -274,6 +277,7 @@ class Sidebar(QWidget):
         gear.setToolTip("Ajustes")
         gear.clicked.connect(window.open_settings)
         head.addWidget(logo)
+        head.addSpacing(10)
         head.addWidget(self.title, 1)
         head.addWidget(gear)
         outer.addLayout(head)

@@ -323,3 +323,90 @@ def test_delete_key_removes_selection(window, qapp):
     ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
     ed.view.keyPressEvent(ev)
     assert ed.scene.items_by_id == {}
+
+
+# ---------------------------------------------------------------- contas escritas à mão
+def _glyphs():
+    import mathink
+
+    def arc(cx, cy, rx, ry, a0, a1):
+        return mathink._arc(cx, cy, rx, ry, a0, a1, 16)
+    return {
+        "1": [[(44, 8), (50, 0), (49, 100)]],
+        "2": [[*arc(48, 28, 26, 27, 190, 370), (40, 70), (20, 98), (80, 96)]],
+        "7": [[(15, 4), (84, 0), (40, 100)]],
+        "+": [[(10, 50), (90, 50)], [(50, 10), (50, 90)]],
+        "=": [[(10, 38), (90, 37)], [(10, 66), (90, 64)]],
+    }
+
+
+def _write(ed, text, x=120.0, y=300.0, size=34.0):
+    g = _glyphs()
+    for ch in text:
+        sz = size * 0.7 if ch in "+=" else size
+        dy = size * 0.15 if ch in "+=" else 0
+        for st in g[ch]:
+            dense = []
+            for a, b in zip(st, st[1:]):
+                for k in range(6):
+                    t = k / 6
+                    dense.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+            dense.append(st[-1])
+            ed.finish_stroke(0, "pen", [(x + px * sz / 100, y + dy + py * sz / 100, 0.5) for px, py in dense])
+        x += sz * 0.9 + 8
+
+
+def test_handwritten_sum_is_solved_without_windows(window, qapp, monkeypatch):
+    import handwriting
+    monkeypatch.setattr(handwriting, "RUN_IN_THREAD", False)
+    ed = open_new(window, qapp)
+    ed.doc["canvas"]["solveEquations"] = True
+    ed.doc["canvas"]["recognizeDiagrams"] = True
+    _write(ed, "12+7=")
+    assert not [it for it in ed.scene.items_by_id.values() if it.kind in ("line", "shape")]   # "=" e "+" seguem tinta
+    ed.ink_timer.stop()
+    ed._ink_pause()
+    answers = [it for it in ed.scene.items_by_id.values() if it.data_state.get("equationOf")]
+    assert len(answers) == 1 and answers[0].data_state["text"] == "19"
+    ed.undo()
+    assert not [it for it in ed.scene.items_by_id.values() if it.data_state.get("equationOf")]
+
+
+def test_eraser_removes_recognized_shapes(window, qapp):
+    import math
+    ed = open_new(window, qapp)
+    ed.doc["canvas"]["recognizeDiagrams"] = True
+    circle = [(300 + 80 * math.cos(t / 40 * 2 * math.pi), 400 + 50 * math.sin(t / 40 * 2 * math.pi), 0.5) for t in range(44)]
+    ed.finish_stroke(0, "pen", circle)
+    shape = [it for it in ed.scene.items_by_id.values() if it.kind == "shape"][0]
+    assert shape.data_state.get("fromInk")
+    ed.scene.begin_change()
+    ed.erase_at(QPointF(300, 400))          # no meio da elipse vazia: não apaga
+    ed.erase_at(QPointF(380, 400))          # na borda: apaga
+    ed.scene.end_change("Apagar")
+    assert not [it for it in ed.scene.items_by_id.values() if it.kind == "shape"]
+    ed.undo()
+    assert [it for it in ed.scene.items_by_id.values() if it.kind == "shape"]
+
+
+def test_click_on_page_opens_text_box(window, qapp):
+    ed = open_new(window, qapp)
+    sc = ed.scene
+    before = len(ed.history.entries)
+    assert not ed.click_off_story(QPointF(sc._text_margins["left"] + 20, 8))        # 1ª linha: texto da nota
+    assert ed.click_off_story(QPointF(300, 500))
+    box = [it for it in sc.items_by_id.values() if it.data_state.get("autoBox")][0]
+    assert box.editing
+    box.stop_editing()                       # vazia: some, sem deixar passo de desfazer
+    pump(qapp, 20)
+    assert box.block_id not in sc.items_by_id and len(ed.history.entries) == before
+    assert ed.click_off_story(QPointF(300, 500))
+    box = [it for it in sc.items_by_id.values() if it.data_state.get("autoBox")][0]
+    box.text.textCursor().insertText("lembrete")
+    box.stop_editing()
+    pump(qapp, 20)
+    assert box.block_id in sc.items_by_id
+    assert ed.click_off_story(QPointF(300, 700)) and box.block_id in sc.items_by_id   # selecionada: só tira a seleção
+    assert not [it for it in sc.items_by_id.values() if it.data_state.get("autoBox") and it is not box]
+    simple = open_new(window, qapp, simple=True)
+    assert not simple.click_off_story(QPointF(300, 500))

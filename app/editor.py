@@ -11,7 +11,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QMimeData, QPointF, QRectF, QSizeF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication, QImage, QKeySequence, QPageLayout,
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication, QImage, QKeySequence, QPageLayout, QPainterPath, QPainterPathStroker,
                            QPageSize, QPainter, QPdfWriter, QShortcut, QTextCharFormat, QTextCursor, QTextListFormat)
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGraphicsItem, QHBoxLayout, QInputDialog, QLabel,
                                QMenu, QMessageBox, QVBoxLayout, QWidget)
@@ -30,12 +30,55 @@ from canvas_view import INK_TOOLS, CanvasView
 from editor_ui import FormatBar, PagesPanel, RoundButton, ToolsPanel, swatch_icon
 from media import AudioController, FrameGrabber, RecorderDialog, VideoDialog
 from textitem import EditableText
-from undo import History
+from undo import DeltaEntry, History, TextEntry
 
 OBJ_MIME = "application/x-gotit-objects"
 IMAGE_FILTER = "Imagens (*.png *.jpg *.jpeg *.heic *.heif *.webp *.gif *.bmp *.tif *.tiff)"
 VIDEO_FILTER = "Vídeos (*.mp4 *.mov *.m4v *.avi *.wmv *.mkv *.webm)"
 AUDIO_FILTER = "Áudio (*.m4a *.mp3 *.wav *.aac *.wma *.ogg *.flac *.opus)"
+
+
+def ink_box(points) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def ink_groups(scene, pending: list[str]) -> list[tuple[list[str], list[str]]]:
+    """Grupos de traços de caneta na mesma linha e perto uns dos outros. Cada grupo começa nos
+    traços novos e cresce com a tinta que já estava ao lado (uma conta escrita com pausas é lida
+    inteira). Devolve (todos os traços do grupo, só os novos)."""
+    strokes = {sid: st.state() for sid, st in scene.strokes_by_id.items() if (st.data_state.get("tool") or "pen") == "pen"}
+    boxes = {sid: ink_box(st["points"]) for sid, st in strokes.items() if st.get("points")}
+    page = {sid: st.get("pageID") for sid, st in strokes.items()}
+
+    def near(a, b) -> bool:
+        if page[a] != page[b]:
+            return False
+        A, B = boxes[a], boxes[b]
+        ha, hb = A[3] - A[1], B[3] - B[1]
+        overlap = min(A[3], B[3]) - max(A[1], B[1])
+        # traços chatos ("−", "=") contam se ficarem dentro da altura do vizinho
+        if overlap < 0.3 * min(ha, hb) - 1.0:
+            return False
+        gap = max(B[0] - A[2], A[0] - B[2], 0.0)
+        return gap <= max(18.0, 1.1 * max(ha, hb))
+    seen: set = set()
+    groups = []
+    for start in pending:
+        if start in seen or start not in boxes:
+            continue
+        group, todo = [start], [start]
+        seen.add(start)
+        while todo:
+            cur = todo.pop()
+            for other in boxes:
+                if other not in seen and near(cur, other):
+                    seen.add(other)
+                    group.append(other)
+                    todo.append(other)
+        groups.append((group, [g for g in group if g in pending]))
+    return groups
 
 
 class ChronologyItem(QGraphicsItem):
@@ -107,7 +150,8 @@ class Editor(QWidget):
         self._grabbers = []
         self._find_dialog = None
         self._last_state = None
-        self._hw_pending: list = []
+        self._ink_pending: list = []
+        self._ink_times: dict = {}
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -160,7 +204,7 @@ class Editor(QWidget):
         self.thumb_timer = QTimer(self, singleShot=True, interval=2500, timeout=self._update_thumbs)
         self.state_timer = QTimer(self, interval=180, timeout=self._refresh_state)
         self.state_timer.start()
-        self.hw_timer = QTimer(self, singleShot=True, interval=1300, timeout=self._recognize_handwriting)
+        self.ink_timer = QTimer(self, singleShot=True, interval=1100, timeout=self._ink_pause)
         self._shortcuts()
         self.tools.show_ink(self.ink["pen"]["color"], self.ink["pen"]["width"])
         self.tools.whole.setChecked(False)
@@ -431,27 +475,50 @@ class Editor(QWidget):
 
     # ================================================================== tinta
     def finish_stroke(self, page: int, tool: str, scene_points: list) -> None:
+        """Traço novo vira tinta na hora. Formas grandes e soltas viram forma perfeita logo; o
+        resto espera uma pausa na escrita (assim o "=" e o "−" de uma conta não viram linhas)."""
         sc = self.scene
         top = page * sc.page_h
         pts = ink.simplify([(x, y - top, p) for x, y, p in scene_points])
         color, width = self.ink_style(tool)
         page_id = sc.page_id_at(page)
         canvas = self.doc["canvas"]
-        if tool == "pen" and canvas.get("recognizeDiagrams") and len(pts) >= 6:
-            found = shapes.recognize([(p[0], p[1]) for p in pts])
-            if found is not None:
-                self._insert_recognized(found, page, color, width)
-                return
         state = ink.new_stroke_state(page_id, tool, color, width, pts)
         with sc.change("Desenho"):
             item = sc.add_stroke(state)
         if self.view.tool == "lasso":
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        if tool == "pen" and (canvas.get("handwritingToText") or canvas.get("solveEquations")):
-            self._hw_pending.append(state["id"])
-            self.hw_timer.start()
+        if tool != "pen":
+            return
+        now = time.monotonic()
+        box = ink_box(state["points"])
+        if canvas.get("recognizeDiagrams") and len(pts) >= 6 and max(box[2] - box[0], box[3] - box[1]) >= 60 \
+                and not self._near_recent(page_id, box, now):
+            found = shapes.recognize([(p[0], p[1]) for p in pts])
+            if found is not None:
+                self._replace_with_shape(state["id"], found, page, color, width)
+                return
+        self._ink_times[state["id"]] = now
+        self._ink_pending.append(state["id"])
+        self.ink_timer.start()
 
-    def _insert_recognized(self, found: shapes.Recognized, page: int, color: str, width: float) -> None:
+    def _near_recent(self, page_id: str, box, now: float) -> bool:
+        for sid, t in self._ink_times.items():
+            st = self.scene.strokes_by_id.get(sid)
+            if st is None or now - t > 2.5 or st.data_state.get("pageID") != page_id:
+                continue
+            b = ink_box(st.data_state["points"])
+            if not (b[2] + 40 < box[0] or box[2] + 40 < b[0] or b[3] + 40 < box[1] or box[3] + 40 < b[1]):
+                return True
+        return False
+
+    def _replace_with_shape(self, stroke_id: str, found, page: int, color: str, width: float) -> None:
+        sc = self.scene
+        with sc.change("Forma"):
+            sc.remove_stroke(stroke_id)
+            self._insert_recognized(found, page, color, width, wrap=False)
+
+    def _insert_recognized(self, found: shapes.Recognized, page: int, color: str, width: float, wrap: bool = True) -> None:
         sc = self.scene
         page_id = sc.page_id_at(page)
         x, y, w, h = found.frame
@@ -461,23 +528,30 @@ class Editor(QWidget):
             a = self.block_at(QPointF(x1, y1 + page * sc.page_h), shapes_only=True)
             b = self.block_at(QPointF(x2, y2 + page * sc.page_h), shapes_only=True)
             if a is not None and b is not None and a is not b:
-                self.connect_blocks(a, b, color=color, width=max(1.5, width), arrow=found.kind == "arrow")
+                self.connect_blocks(a, b, color=color, width=max(1.5, width), arrow=found.kind == "arrow",
+                                    from_ink=True, wrap=wrap)
                 return
             x0, y0 = min(x1, x2), min(y1, y2)
             state = {"id": model.new_id(), "kind": "line", "shape": found.kind, "pageID": page_id,
                      "frame": {"x": x0, "y": y0, "width": max(1, abs(x2 - x1)), "height": max(1, abs(y2 - y1))},
                      "points": [[x1 - x0, y1 - y0], [x2 - x0, y2 - y0]], "stroke": color,
-                     "lineWidth": max(1.5, width), "z": sc.next_z()}
+                     "lineWidth": max(1.5, width), "z": sc.next_z(), "fromInk": True}
         else:
             state = {"id": model.new_id(), "kind": "shape", "shape": found.kind, "pageID": page_id,
                      "frame": {"x": x, "y": y, "width": max(20, w), "height": max(20, h)}, "rotation": found.rotation,
-                     "stroke": color, "fill": None, "lineWidth": max(1.5, width), "z": sc.next_z(), "text": "", "html": ""}
+                     "stroke": color, "fill": None, "lineWidth": max(1.5, width), "z": sc.next_z(), "text": "", "html": "",
+                     "fromInk": True}
             if found.vertices:
                 state["vertices"] = found.vertices
-        with sc.change("Forma"):
+        if wrap:
+            with sc.change("Forma"):
+                sc.add_block(state)
+        else:
             sc.add_block(state)
 
     def erase_at(self, pos: QPointF) -> None:
+        """Borracha: apaga tinta (o traço inteiro ou a parte tocada) e também as formas, linhas e
+        conexões que nasceram de um desenho reconhecido."""
         sc = self.scene
         r = self.eraser_radius / max(0.3, self.view.transform().m11())
         box = QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
@@ -493,14 +567,54 @@ class Editor(QWidget):
             sc.remove_stroke(sid)
             for piece in result:
                 sc.add_stroke(piece)
+        circle = QPainterPath()
+        circle.addEllipse(pos, r, r)
+        for bid, it in list(sc.items_by_id.items()):
+            if not it.data_state.get("fromInk") or not it.sceneBoundingRect().intersects(box):
+                continue
+            if isinstance(it, items_mod.LineItem):
+                path = QPainterPath(it.p1)
+                path.lineTo(it.p2)
+            elif isinstance(it, items_mod.ShapeItem):
+                path = it.outline()
+            else:
+                continue
+            stroker = QPainterPathStroker()
+            stroker.setWidth(float(it.data_state.get("lineWidth") or 2) + 2)
+            if it.mapToScene(stroker.createStroke(path)).intersects(circle):
+                sc.remove_block(bid)
+        for rid, conn in list(sc.connectors.items()):
+            if conn.data_state.get("fromInk") and conn.sceneBoundingRect().intersects(box) and conn.shape().intersects(circle):
+                sc.remove_connector(rid)
 
-    def _recognize_handwriting(self) -> None:
-        pending, self._hw_pending = self._hw_pending, []
-        if self.scene is None or not pending:
+    # ------------------------------------------------------------------ escrita e contas
+    def _ink_pause(self) -> None:
+        """Pausa na escrita: separa o que foi escrito em grupos (por linha) e, em cada um,
+        reconhece forma (traço solto), resolve conta ou troca a escrita por texto."""
+        pending, self._ink_pending = self._ink_pending, []
+        sc = self.scene
+        if sc is None:
             return
-        strokes = [self.scene.strokes_by_id[s] for s in pending if s in self.scene.strokes_by_id]
-        if strokes:
-            self.window.recognize_handwriting(self, strokes)
+        cutoff = time.monotonic() - 600
+        self._ink_times = {k: v for k, v in self._ink_times.items() if v > cutoff and k in sc.strokes_by_id}
+        pending = [sid for sid in pending if sid in sc.strokes_by_id]
+        if not pending:
+            return
+        canvas = self.doc["canvas"]
+        for grown, mine in ink_groups(sc, pending):
+            if len(grown) == 1 and canvas.get("recognizeDiagrams"):
+                st = sc.strokes_by_id[grown[0]].state()
+                if len(st["points"]) >= 6:
+                    found = shapes.recognize([(p[0], p[1]) for p in st["points"]])
+                    b = ink_box(st["points"])
+                    side = max(b[2] - b[0], b[3] - b[1])
+                    # traço pequeno e reto é escrita (o "1", o "−"), não linha
+                    if found is not None and side >= (60 if found.kind in ("line", "arrow") else 24):
+                        self._replace_with_shape(st["id"], found, sc.page_index_of(st.get("pageID")),
+                                                 st.get("color") or "#1F2933", float(st.get("width") or 2))
+                        continue
+            if canvas.get("solveEquations") or canvas.get("handwritingToText"):
+                self.window.recognize_handwriting(self, grown, mine)
 
     # ================================================================== objetos: criar
     def _occupied(self, page: int) -> list[tuple]:
@@ -617,10 +731,15 @@ class Editor(QWidget):
         sc.clearSelection()
         item.setSelected(True)
 
-    def connect_blocks(self, a, b, color="#334155", width=2.0, arrow=True) -> None:
+    def connect_blocks(self, a, b, color="#334155", width=2.0, arrow=True, from_ink=False, wrap=True) -> None:
         state = {"id": model.new_id(), "sourceID": a.block_id, "targetID": b.block_id, "kind": "connector",
                  "style": {"color": color, "width": width, "arrowAtEnd": arrow, "routing": "straight"}}
-        with self.scene.change("Conexão"):
+        if from_ink:
+            state["fromInk"] = True
+        if wrap:
+            with self.scene.change("Conexão"):
+                self.scene.add_connector(state)
+        else:
             self.scene.add_connector(state)
         if self.tool == "connector":
             self.set_tool("select")
@@ -1352,6 +1471,58 @@ class Editor(QWidget):
         for it in self.scene.items_by_id.values():
             if isinstance(it, items_mod.TextBlock) and it.editing:
                 it.stop_editing()
+
+    def click_off_story(self, pos: QPointF) -> bool:
+        """Clique na folha fora do texto da nota: abre uma caixa de texto ali (como no iPad). Se
+        havia objetos selecionados, o clique só tira a seleção. Notas simples seguem só com o texto."""
+        sc = self.scene
+        if sc is None or self.tool != "select" or self.doc.get("kind") == "web" or self.doc["canvas"].get("simpleNote"):
+            return False
+        page = sc.page_at_y(pos.y())
+        top = page * sc.page_h
+        if not (0 <= pos.x() <= sc.page_w and top <= pos.y() <= top + sc.page_h):
+            return False
+        if sc.story.text_region().contains(pos):
+            return False
+        busy = [it for it in sc.items_by_id.values() if isinstance(it, items_mod.TextBlock) and it.editing]
+        if sc.selectedItems() or busy:
+            sc.clearSelection()
+            self.stop_all_editing()
+            sc.clearFocus()
+            return True
+        self.stop_all_editing()
+        size = float(sc.default_size or 16)
+        w, h = 240.0, max(36.0, size * 2.2)
+        x = max(8.0, min(pos.x() - 8, sc.page_w - w - 8))
+        y = max(8.0, min(pos.y() - top - h / 2, sc.page_h - h - 8))
+        item = self._add("text", w, h, "Caixa de texto", at=QPointF(x + w / 2, top + y + h / 2), select=False,
+                         text="", html="", fontSize=sc.default_size, autoBox=True)
+        item.setSelected(True)
+        item.start_editing()
+        return True
+
+    def drop_empty_box(self, block_id: str) -> None:
+        """Caixa aberta por um clique e deixada vazia: some, junto com o passo de desfazer dela."""
+        sc = self.scene
+        it = sc.items_by_id.get(block_id) if sc is not None else None
+        if it is None or it.editing or it.text.document().toPlainText().strip():
+            return
+        h = self.history
+        del h.entries[h.index:]
+        while h.index and isinstance(h.entries[h.index - 1], TextEntry) and h.entries[h.index - 1].item is it.text:
+            h.entries.pop()
+            h.index -= 1
+        top = h.entries[h.index - 1] if h.index else None
+        key = f"b:{block_id}"
+        if isinstance(top, DeltaEntry) and set(top.diff) == {key} and top.diff[key][0] is None:
+            h.entries.pop()
+            h.index -= 1
+            sc.remove_block(block_id)
+            h.changed.emit()
+            self.content_changed()
+        else:
+            with sc.change("Apagar caixa vazia"):
+                sc.remove_block(block_id)
 
     def story_pressed(self) -> None:
         if self.tool != "select":

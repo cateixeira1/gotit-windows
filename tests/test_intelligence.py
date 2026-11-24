@@ -18,10 +18,10 @@ MODELS = Path(os.environ.get("GOTIT_MODELS", "/home/claude/models"))
 
 
 def test_equations():
-    assert mathsolve.answer_text("x^2-5x+6=0") == "x = 2  ou  x = 3"
+    assert mathsolve.answer_text("x^2-5x+6=0") == "x = 2 ou x = 3"
     assert mathsolve.answer_text("2x + 4 = 10") == "x = 3"
     assert mathsolve.answer_text("x²=-1") == "sem solução real"
-    assert mathsolve.answer_text("3x=3x") == "qualquer x"
+    assert mathsolve.answer_text("3x=3x") == "todo x real"
     assert mathsolve.answer_text("0,5x=2") == "x = 4"
     assert mathsolve.answer_text("x+y=1") is None          # duas incógnitas: não inventa resposta
     assert mathsolve.answer_text("x^3=8") is None           # só até o 2º grau

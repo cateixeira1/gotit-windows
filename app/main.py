@@ -70,6 +70,19 @@ def self_test(report: str) -> int:
             result["checks"]["multimedia"] = True
         except Exception as e:
             result["checks"]["multimedia"] = f"ausente: {e}"
+        import mathink
+        import mathsolve
+        line = [[(10.0, 0.0), (12.0, 40.0)],                          # 1
+                [(30.0, 20.0), (50.0, 20.0)], [(40.0, 10.0), (40.0, 30.0)],   # +
+                [(65.0, 1.0), (64.0, 41.0)],                          # 1
+                [(80.0, 15.0), (100.0, 15.0)], [(80.0, 25.0), (100.0, 25.0)]]  # =
+        result["checks"]["mathink"] = mathink.read(line)[:1]
+        result["checks"]["mathsolve"] = mathsolve.answer_text("12+7=") == "19"
+        try:
+            import handwriting
+            result["checks"]["windows_handwriting"] = handwriting.recognizers() or handwriting._state.get("error") or []
+        except Exception as e:
+            result["checks"]["windows_handwriting"] = f"erro: {type(e).__name__}"
         for name in ("litert_lm", "faster_whisper", "winrt.windows.ui.input.inking"):
             try:
                 __import__(name)

@@ -153,8 +153,8 @@ QSlider::handle:horizontal {{ width: 16px; height: 16px; margin: -6px 0; border-
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 QTabBar::tab {{ padding: 6px 12px; }}
 QDialog {{ background: {WINDOW}; }}
-QGroupBox {{ border: 1px solid {LINE}; border-radius: 8px; margin-top: 14px; padding: 10px 8px 8px 8px; background: white; }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {MUTED}; font-weight: 600; }}
+QGroupBox {{ border: 1px solid {LINE}; border-radius: 8px; margin-top: 26px; padding: 12px 8px 8px 8px; background: white; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: 4px; top: 2px; padding: 0 2px; color: {MUTED}; font-weight: 600; }}
 QProgressBar {{ border: none; background: #E3E7EB; border-radius: 3px; height: 6px; text-align: center; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 """

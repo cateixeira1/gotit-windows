@@ -43,9 +43,25 @@ class StoryItem(EditableText):
 
     def mousePressEvent(self, event):
         ed = self.canvas.editor
+        if ed is not None and event.button() == Qt.MouseButton.LeftButton and not event.modifiers() \
+                and ed.click_off_story(event.scenePos()):
+            event.accept()
+            return
         if ed is not None:
             ed.story_pressed()
         super().mousePressEvent(event)
+
+    def text_region(self) -> QRectF:
+        """Onde o clique vai para o texto da nota: da primeira linha até uma linha abaixo da
+        última, entre as margens. Fora disso o clique abre uma caixa de texto."""
+        c = self.canvas
+        m = c._text_margins
+        doc = self.document()
+        layout = doc.documentLayout()
+        last = layout.blockBoundingRect(doc.lastBlock())
+        line = max(18.0, last.height() / max(1, doc.lastBlock().layout().lineCount() or 1))
+        bottom = last.bottom() + line
+        return self.mapRectToScene(QRectF(m["left"] - 6, 0, c.page_w - m["left"] - m["right"] + 12, bottom))
 
 
 class PageItem(QGraphicsItem):

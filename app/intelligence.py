@@ -31,9 +31,9 @@ class Intelligence:
         import handwriting
         QMessageBox.information(self.window, "Escrita vira texto", handwriting.explanation())
 
-    def recognize_handwriting(self, editor, strokes) -> None:
+    def recognize_handwriting(self, editor, stroke_ids, new_ids=None) -> None:
         import handwriting
-        handwriting.recognize_into(editor, strokes)
+        handwriting.recognize_into(editor, stroke_ids, new_ids)
 
     # ------------------------------------------------------------------ áudio
     def transcribe(self, editor, item) -> None:
