@@ -52,7 +52,9 @@ def test_bar_two_rows_everything_visible_and_window_narrows(window, qapp):
     assert bar.highlight.isVisible() and bar.highlight.mapTo(bar, QPoint(0, 0)).x() + bar.highlight.width() <= bar.width()
     window.resize(1400, 900)
     pump(qapp, 60)
-    assert ed.tools.isVisible() and window.sidebar.isVisible()
+    room = window.centralWidget().width()
+    assert window.sidebar.isVisible() == (room - window.sidebar.width() >= window.CANVAS_MIN)
+    assert ed.tools.isVisible() == (room - window.sidebar.width() - 300 >= window.CANVAS_MIN)
 
 
 # ---------------------------------------------------------------------- títulos
