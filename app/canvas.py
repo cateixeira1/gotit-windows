@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 from PySide6.QtCore import QPointF, QRectF, QSizeF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage, QPainter, QPen, QTextBlockFormat,
-                           QTextCursor, QTextOption)
+                           QTextCharFormat, QTextCursor, QTextOption)
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene
 
 import items as items_mod
@@ -34,22 +34,115 @@ class StoryItem(EditableText):
         self.canvas = canvas
         self.setZValue(1)
 
+    # ------------------------------------------------------------------ clicar e digitar (como no Word)
+    pending: QPointF | None = None
+
+    def mousePressEvent(self, event):
+        self.clear_pending()
+        ed = self.canvas.editor
+        if ed is not None:
+            ed.story_pressed()
+        super().mousePressEvent(event)
+        # linha vazia: o texto começa onde se clicou (recuo até o ponto)
+        if event.button() == Qt.MouseButton.LeftButton and not event.modifiers():
+            c = self.textCursor()
+            if not c.hasSelection() and not c.block().text() and c.block().textList() is None:
+                m = self.canvas._text_margins
+                if event.pos().x() - m["left"] > 12:
+                    self.set_pending(event.pos(), reuse_block=True)
+
+    def set_pending(self, local: QPointF, reuse_block: bool = False) -> None:
+        """Clique abaixo do texto (ou numa linha vazia): o cursor fica no ponto clicado; as linhas
+        e o recuo até lá só entram quando a pessoa digita (clicar e sair não muda nada)."""
+        self.prepareGeometryChange()
+        self.pending = QPointF(local)
+        self._pending_reuse = reuse_block
+        if not reuse_block:
+            c = self.textCursor()
+            c.movePosition(QTextCursor.MoveOperation.End)
+            self.setTextCursor(c)
+        self.document().documentLayout().setProperty("cursorWidth", 0)
+        self.update()
+
+    def clear_pending(self) -> None:
+        if self.pending is not None:
+            self.prepareGeometryChange()
+            self.pending = None
+            self.document().documentLayout().setProperty("cursorWidth", 1)
+            self.update()
+
+    def apply_pending(self, then=None) -> None:
+        """Cria as linhas vazias até a altura do clique e o recuo até o ponto, e então ``then(c)``
+        (o que foi digitado). Tudo num passo só de desfazer."""
+        target, reuse = self.pending, getattr(self, "_pending_reuse", False)
+        self.clear_pending()
+        layout = self.document().documentLayout()
+        c = self.textCursor()
+        c.beginEditBlock()
+        if not reuse:
+            c.movePosition(QTextCursor.MoveOperation.End)
+            last = c.block().blockFormat()
+            plain = QTextBlockFormat()
+            plain.setLineHeight(last.lineHeight(), last.lineHeightType())
+            plain.setTopMargin(last.topMargin())
+            plain.setBottomMargin(last.bottomMargin())
+            n = 0
+            # a diagramação só se atualiza ao fechar o bloco de edição: insere, confere e continua
+            while layout.blockBoundingRect(c.block()).bottom() < target.y() and n < 400:
+                c.insertBlock(plain, QTextCharFormat())
+                n += 1
+                c.endEditBlock()
+                c.joinPreviousEditBlock()
+        indent = target.x() - self.canvas._text_margins["left"]
+        if indent > 12:
+            f = c.blockFormat()
+            f.setLeftMargin(round(indent, 1))
+            f.setTextIndent(0)
+            c.setBlockFormat(f)
+        if then is not None:
+            then(c)
+        c.endEditBlock()
+        self.setTextCursor(c)
+
+    def keyPressEvent(self, event):
+        if self.pending is not None:
+            key, txt = event.key(), event.text()
+            ctrl = bool(event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier))
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.apply_pending(lambda c: c.insertBlock())
+                event.accept()
+                return
+            if txt and txt.isprintable() and not ctrl:
+                self.apply_pending(lambda c: c.insertText(txt))
+                event.accept()
+                return
+            if ctrl and key == Qt.Key.Key_V:
+                self.apply_pending()
+            elif key not in (Qt.Key.Key_Shift, Qt.Key.Key_Control, Qt.Key.Key_Alt, Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
+                self.clear_pending()
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        if event.reason() != Qt.FocusReason.PopupFocusReason:
+            self.clear_pending()
+        super().focusOutEvent(event)
+
     def paint(self, painter, option, widget=None):
-        # sem o retângulo de foco do Qt em volta do texto
         from PySide6.QtWidgets import QStyle
         option.state &= ~QStyle.StateFlag.State_HasFocus
         option.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, option, widget)
+        if self.pending is not None and self.hasFocus():
+            h = QFontMetricsF(self.document().defaultFont()).height()
+            painter.setPen(QPen(QColor("#1F2933"), 1.2))
+            x, y = self.pending.x(), self.pending.y()
+            painter.drawLine(QPointF(x, y - h / 2), QPointF(x, y + h / 2))
 
-    def mousePressEvent(self, event):
-        ed = self.canvas.editor
-        if ed is not None and event.button() == Qt.MouseButton.LeftButton and not event.modifiers() \
-                and ed.click_off_story(event.scenePos()):
-            event.accept()
-            return
-        if ed is not None:
-            ed.story_pressed()
-        super().mousePressEvent(event)
+    def boundingRect(self):
+        r = super().boundingRect()
+        if self.pending is not None:
+            r = r.united(QRectF(self.pending.x() - 4, self.pending.y() - 40, 8, 80))
+        return r
 
     def text_region(self) -> QRectF:
         """Onde o clique vai para o texto da nota: da primeira linha até uma linha abaixo da

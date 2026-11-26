@@ -41,8 +41,13 @@ PATHS: dict[str, str] = {
     "list-num": f'<path d="M4 5h1.5v4M4 9h3M4 14.5c0-1 .8-1.5 1.5-1.5S7 13.5 7 14.3c0 1-3 2-3 3.7h3" {S} stroke-width="1.4"/><path d="M10 7h10M10 12h10M10 17h10" {S}/>',
     "indent": f'<path d="M4 5h16M10 10h10M10 14h10M4 19h16M4 9l3 3-3 3" {S}/>',
     "outdent": f'<path d="M4 5h16M10 10h10M10 14h10M4 19h16M7 9l-3 3 3 3" {S}/>',
-    "text-color": f'<path d="M6 16L11 4h2l5 12M8 12h8" {S}/><rect x="4" y="18.5" width="16" height="2.5" rx="1" {F}/>',
-    "highlight": f'<path d="M14.5 4.5l5 5-8 8H6.5v-5z" {S}/><path d="M4 21h16" {S}/>',
+    # lata de tinta virada, com um pingo; a faixa embaixo mostra a cor
+    "text-color": f'<path d="M3.6 9.6 L10.4 2.8 L16.8 9.2 L10 16 Z" {S}/><path d="M3.6 9.6 H16.8" {S}/>'
+                  f'<path d="M6.6 6.6 L3.2 3.2" {S}/><path d="M19.4 11.2c-.9 1.4-1.5 2.3-1.5 3.1a1.5 1.5 0 0 0 3 0c0-.8-.6-1.7-1.5-3.1z" {F}/>'
+                  f'<rect x="3" y="18.6" width="18" height="2.6" rx="1" {F}/>',
+    # marca-texto em amarelo neon (a cor fica mesmo com o ícone em cinza ou azul)
+    "highlight": f'<path d="M14.5 4.5l5 5-8 8H6.5v-5z" fill="#F4FF2E" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>'
+                 f'<path d="M6.5 17.5l-2.5 2.5" {S}/><rect x="3" y="19.6" width="18" height="2.2" rx="1" fill="#F4FF2E" stroke="none"/>',
     "link": f'<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" {S}/>',
     "find": f'<circle cx="10" cy="10" r="5.5" {S}/><path d="M14 14l2.5 2.5M14 20.5h7M17.5 17v7" {S} stroke-width="1.5"/>',
     "pages": f'<rect x="7" y="3" width="12" height="15" rx="1.5" {S}/><path d="M5 6v13a2 2 0 0 0 2 2h9" {S}/>',
@@ -70,6 +75,12 @@ PATHS: dict[str, str] = {
     "diamond": f'<path d="M12 3l9 9-9 9-9-9z" {S}/>',
     "triangle": f'<path d="M12 4l9 16H3z" {S}/>',
     "line": f'<path d="M5 19L19 5" {S}/>',
+    "spellcheck": f'<path d="M3 15l3.5-10h1L11 15M4.4 11.5h5.2M13 5h4a2.5 2.5 0 0 1 0 5h-4zM13 10h4.5a2.5 2.5 0 0 1 0 5H13z" {S}/><path d="M12 19l2.5 2.5L21 15" {S}/>',
+    "quote": f'<path d="M5 11h4v6H4v-4c0-3 1.5-5 4-6M14 11h4v6h-5v-4c0-3 1.5-5 4-6" {S}/>',
+    "dashed": f'<path d="M4 20L20 4" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3.2 2.6"/>',
+    "line-spacing": f'<path d="M5 4v16M3 6.5L5 4l2 2.5M3 17.5L5 20l2-2.5M10 6h10M10 12h10M10 18h10" {S}/>',
+    "signature": f'<path d="M3 15c2-4 3.5-7 5-7s-.5 6 1 6 2.5-3 4-3-.5 3 1 3 2.5-1.5 4-2" {S}/><path d="M3 20h18" {S}/>',
+    "keep-next": f'<path d="M5 5h14M5 9h10M5 15h14M5 19h10" {S}/><path d="M20 9v6" stroke="currentColor" stroke-width="1.8" stroke-dasharray="1.5 1.5"/>',
     "arrow": f'<path d="M5 19L19 5M10 5h9v9" {S}/>',
     "header": f'<rect x="4" y="3" width="16" height="18" rx="2" {S}/><path d="M4 7.5h16M4 16.5h16" {S}/><rect x="6.5" y="4.6" width="11" height="1.6" rx=".8" {F}/>',
     "number": f'<path d="M9 4L7 20M17 4l-2 16M4 9h16M3 15h16" {S}/>',

@@ -24,6 +24,7 @@ import ink
 import items as items_mod
 import model
 import shapes
+import abnt
 import textfmt
 import theme
 from canvas import CanvasScene, StoryItem
@@ -210,6 +211,7 @@ class Editor(QWidget):
         self.state_timer = QTimer(self, interval=180, timeout=self._refresh_state)
         self.state_timer.start()
         self.ink_timer = QTimer(self, singleShot=True, interval=1100, timeout=self._ink_pause)
+        self.keep_timer = QTimer(self, singleShot=True, interval=500, timeout=self._update_keep_breaks)
         self._shortcuts()
         self.tools.show_ink(self.ink["pen"]["color"], self.ink["pen"]["width"])
         self.tools.whole.setChecked(False)
@@ -226,6 +228,7 @@ class Editor(QWidget):
         self.scene = CanvasScene(doc, self.assets, editor=self, resolver=self.window.resolve_note,
                                  default_font=(family, size))
         self.scene.pagesChanged.connect(lambda: self.thumb_timer.start())
+        self.scene.story.document().contentsChanged.connect(self.keep_timer.start)
         self.chrono = ChronologyItem(self)
         if doc.get("kind") == "web":
             self.scene.addItem(self.chrono)
@@ -258,6 +261,142 @@ class Editor(QWidget):
         self.store.mark_opened(doc["id"])
         self._update_bar_for_kind()
         self.thumb_timer.start()
+
+    def _update_keep_breaks(self) -> None:
+        """"Manter com o parágrafo seguinte" (e títulos): o parágrafo desce para a página de baixo
+        quando ficaria sozinho no pé da página. Não mexe enquanto há algo para refazer."""
+        sc = self.scene
+        if sc is None or self.history.applying:
+            return
+        doc = sc.story.document()
+        if doc.isRedoAvailable():
+            return
+        block, any_keep = doc.firstBlock(), False
+        while block.isValid():
+            if textfmt.keeps_with_next(block) or textfmt.state_bits(block) & textfmt.AUTO_BREAK:
+                any_keep = True
+                break
+            block = block.next()
+        if not any_keep:
+            return
+        need = textfmt.keep_breaks(doc, sc.page_h)
+        doc.contentsChanged.disconnect(self.keep_timer.start)
+        try:
+            if textfmt.apply_keep_breaks(doc, need):
+                self.content_changed()
+        finally:
+            doc.contentsChanged.connect(self.keep_timer.start)
+
+    def after_space(self, item) -> None:
+        self.history.break_group()
+        if textfmt.auto_list(item):
+            self.history.break_group()
+            self.content_changed()
+
+    # ------------------------------------------------------------------ revisão gramatical
+    def proofread(self) -> None:
+        if self.scene is None:
+            return
+        import models
+        if not models.ensure(self.window, models.ASSISTANT.key,
+                             "A revisão do texto usa o assistente que roda no seu computador (nada sai dele)."):
+            return
+        targets = self.target_texts()
+        item = targets[0] if targets else self.scene.story
+        if getattr(self, "_proof", None) is not None:
+            self._proof.close()
+        import proofread
+        self._proof = proofread.ProofPanel(self, item)
+        g = self.geometry()
+        top_right = self.mapToGlobal(g.topRight())
+        self._proof.move(top_right.x() - 420, top_right.y() + 60)
+        self._proof.show()
+        self._proof.start()
+
+    def ensure_rect_visible(self, item, cursor: QTextCursor) -> None:
+        layout = item.document().documentLayout()
+        r = layout.blockBoundingRect(cursor.block())
+        self.view.ensureVisible(item.mapRectToScene(r), 30, 120)
+
+    # ------------------------------------------------------------------ citação ABNT
+    def cite_abnt(self, item) -> None:
+        c = item.textCursor()
+        if not c.hasSelection():
+            QMessageBox.information(self, "Citação ABNT", "Selecione o trecho citado e escolha Citação ABNT de novo.")
+            return
+        refs = self.doc["canvas"].setdefault("abntRefs", [])
+        quote = c.selectedText().replace("\u2029", " ").strip()
+        dlg = abnt.make_dialog(self, quote, refs, self.window)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.apply_abnt(item, dlg.result_source(), dlg.kind.currentData(), dlg.page.text().strip())
+
+    def apply_abnt(self, item, src: dict, kind: str, page: str) -> None:
+        sc = self.scene
+        refs = self.doc["canvas"].setdefault("abntRefs", [])
+        if item is sc.story:
+            m = sc._text_margins
+            width = sc.page_w - m["left"] - m["right"]
+        else:
+            width = item.document().textWidth() if item.document().textWidth() > 0 else 240.0
+        self.history.break_group()
+        abnt.apply_citation(item, src, kind, page, width)
+        if abnt.ref_key(src) not in {abnt.ref_key(r) for r in refs}:
+            refs.append(src)
+        self.rebuild_refs(join=item is sc.story)
+        self.history.break_group()
+        self.content_changed()
+
+    def rebuild_refs(self, join: bool = False) -> None:
+        sc = self.scene
+        refs = self.doc["canvas"].get("abntRefs") or []
+        doc = sc.story.document()
+        texts = [abnt.body_text(doc)] + [it.text.document().toPlainText() for it in sc.items_by_id.values()
+                                         if getattr(it, "text", None) is not None]
+        live = [r for r in refs if abnt.present(r, texts)]
+        abnt.rebuild_references(doc, live, join=join, known=refs)
+        self.content_changed()
+
+    def current_keep(self) -> bool:
+        t = self.target_texts()
+        return bool(t) and textfmt.keeps_with_next(t[0].textCursor().block())
+
+    def current_spacing(self) -> tuple[float, float, float]:
+        t = self.target_texts()
+        if not t:
+            return 1.0, 0.0, 0.0
+        bf = t[0].textCursor().blockFormat()
+        factor = bf.lineHeight() / 100 if bf.lineHeightType() == 1 and bf.lineHeight() > 0 else 1.0
+        return factor, bf.topMargin(), bf.bottomMargin()
+
+    def custom_spacing(self) -> None:
+        dlg = dialogs.LineSpacingDialog(self, *self.current_spacing())
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.fmt("spacing3", dlg.values())
+
+    def set_keep_with_next(self, on: bool) -> None:
+        for t in self.target_texts():
+            textfmt.set_keep_with_next(t, on)
+        self.content_changed()
+        self._update_keep_breaks()
+
+    def insert_signature(self) -> None:
+        targets = self.target_texts()
+        item = targets[0] if targets else (self.scene.story if self.scene else None)
+        if item is None:
+            return
+        dlg = dialogs.SignatureDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name, second, place = dlg.values()
+        if item is self.scene.story and self.scene.focusItem() is not item:
+            self.scene.setFocusItem(item)
+            item.cursor_to_end()
+        self.history.break_group()
+        textfmt.insert_signature(item, name, second, place)
+        self.history.break_group()
+        self.content_changed()
+        self._refocus(item)
 
     def _after_open(self, find, part):
         def run():
@@ -782,16 +921,19 @@ class Editor(QWidget):
     def finish_shape_drag(self, kind: str, a: QPointF, b: QPointF) -> None:
         sc = self.scene
         r = QRectF(a, b).normalized()
-        if kind in ("line", "arrow"):
+        if kind in ("line", "arrow", "dashed"):
             if (b - a).manhattanLength() < 8:
                 b = a + QPointF(140, 0)
             page = sc.page_at_y(a.y())
             top = page * sc.page_h
             x0, y0 = min(a.x(), b.x()), min(a.y(), b.y())
-            state = {"id": model.new_id(), "kind": "line", "shape": kind, "pageID": sc.page_id_at(page),
+            state = {"id": model.new_id(), "kind": "line", "shape": "line" if kind == "dashed" else kind,
+                     "pageID": sc.page_id_at(page),
                      "frame": {"x": x0, "y": y0 - top, "width": max(1, abs(b.x() - a.x())), "height": max(1, abs(b.y() - a.y()))},
                      "points": [[a.x() - x0, a.y() - y0], [b.x() - x0, b.y() - y0]], "stroke": "#1F2933", "lineWidth": 2,
                      "z": sc.next_z()}
+            if kind == "dashed":
+                state["lineDash"] = "dashed"
             with sc.change(model.SHAPE_TITLES[kind]):
                 item = sc.add_block(state)
         else:
@@ -1298,6 +1440,16 @@ class Editor(QWidget):
         sub = m.addMenu("Espessura")
         for w in (1, 2, 3, 4, 6, 8):
             sub.addAction(f"{w} pt").triggered.connect(lambda _=False, v=w: self.set_block_field(others, "Espessura", lineWidth=v))
+        sub = m.addMenu(icons.icon("dashed"), "Tipo de linha")
+        current = others[0].data_state.get("lineDash")
+        for title, value in (("Contínua", None), ("Tracejada", "dashed"), ("Pontilhada", "dotted")):
+            a = sub.addAction(title)
+            a.setCheckable(True)
+            a.setChecked(current == value)
+            a.triggered.connect(lambda _=False, v=value: self.set_block_field(
+                others, "Tipo de linha", lineDash=v,
+                **({"stroke": "#1F2933", "lineWidth": 1.5} if any(isinstance(b, items_mod.TextBoxItem) and not b.data_state.get("stroke")
+                                                                  for b in others) and v else {})))
         if any(isinstance(b, items_mod.LineItem) for b in others):
             lines = [b for b in others if isinstance(b, items_mod.LineItem)]
             m.addAction(icons.icon("arrow"), "Seta na ponta").triggered.connect(
@@ -1371,6 +1523,12 @@ class Editor(QWidget):
         for w in (1, 2, 3, 4, 6):
             sub.addAction(f"{w} pt").triggered.connect(lambda _=False, v=w: self._conn_style(conn, width=v))
         style = conn.data_state.get("style") or {}
+        sub = m.addMenu(icons.icon("dashed"), "Tipo de linha")
+        for title, value in (("Contínua", None), ("Tracejada", "dashed"), ("Pontilhada", "dotted")):
+            a = sub.addAction(title)
+            a.setCheckable(True)
+            a.setChecked(style.get("lineDash") == value)
+            a.triggered.connect(lambda _=False, v=value: self._conn_style(conn, lineDash=v))
         m.addAction("Seta na ponta").triggered.connect(lambda: self._conn_style(conn, arrowAtEnd=not style.get("arrowAtEnd", True)))
         m.addAction("Linha em ângulo reto" if style.get("routing") != "orthogonal" else "Linha reta").triggered.connect(
             lambda: self._conn_style(conn, routing="straight" if style.get("routing") == "orthogonal" else "orthogonal"))
@@ -1418,9 +1576,15 @@ class Editor(QWidget):
         for title, value in theme.HIGHLIGHTS:
             sub.addAction(swatch_icon(value), title).triggered.connect(lambda _=False, v=value: self.fmt("highlight", v))
         sub.addAction(swatch_icon(None), "Tirar destaque").triggered.connect(lambda: self.fmt("highlight", None))
+        m.addSeparator()
+        cite = m.addAction(icons.icon("quote"), "Citação ABNT…")
+        cite.setEnabled(has_sel)
+        cite.triggered.connect(lambda: self.cite_abnt(item))
+        if self.doc["canvas"].get("abntRefs"):
+            m.addAction("Atualizar as referências (ABNT)").triggered.connect(lambda: self.rebuild_refs(join=False))
         if has_sel:
             m.addAction(icons.icon("sparkle"), "Perguntar ao assistente sobre o trecho").triggered.connect(
-                lambda: self.window.ask_assistant_about(c.selectedText().replace(" ", "\n")))
+                lambda: self.window.ask_assistant_about(c.selectedText().replace("\u2029", "\n")))
         m.addAction("Selecionar tudo").triggered.connect(lambda: self._text_action(item, "all"))
         m.exec(screen_pos)
 
@@ -1549,28 +1713,27 @@ class Editor(QWidget):
             if getattr(it, "editing", False) and hasattr(it, "stop_editing"):
                 it.stop_editing()
 
-    def click_off_story(self, pos: QPointF) -> bool:
-        """Clique na folha fora do texto da nota: abre uma caixa de texto ali (como no iPad). Se
-        havia objetos selecionados, o clique só tira a seleção. Notas simples seguem só com o texto."""
+    def top_clickable(self, pos: QPointF):
+        for it in self.scene.items(pos):
+            if it.isVisible() and it.acceptedMouseButtons() & Qt.MouseButton.LeftButton:
+                return it
+        return None
+
+    def page_click(self, pos: QPointF) -> bool:
+        """Clique com Selecionar num lugar vazio da folha (fora do texto e dos objetos): o texto da
+        nota começa exatamente ali, como o "clicar e digitar" do Word. Fora das margens, vai para o
+        ponto mais próximo dentro delas. No papel quadriculado, abre a conta nos quadrados."""
         sc = self.scene
-        if sc is None or self.tool != "select" or self.doc.get("kind") == "web" or self.doc["canvas"].get("simpleNote"):
+        if sc is None or self.tool != "select" or self.doc.get("kind") == "web":
             return False
         page = sc.page_at_y(pos.y())
         top = page * sc.page_h
-        if not (0 <= pos.x() <= sc.page_w and top <= pos.y() <= top + sc.page_h):
+        if not (-20 <= pos.x() <= sc.page_w + 20 and top <= pos.y() <= top + sc.page_h):
             return False
-        if sc.story.text_region().contains(pos):
-            return False
-        busy = [it for it in sc.items_by_id.values() if getattr(it, "editing", False)]
-        if sc.selectedItems() or busy:
-            sc.clearSelection()
-            self.stop_all_editing()
-            sc.clearFocus()
-            return True
+        sc.clearSelection()
         self.stop_all_editing()
         grid = sc.grid_at(page, pos.y() - top)
-        if grid and self.doc["canvas"].get("gridTyping", True):
-            # papel quadriculado: digita quadrado a quadrado a partir do quadrado clicado
+        if grid and self.doc["canvas"].get("gridTyping", True) and 0 <= pos.x() <= sc.page_w:
             cell, oy = grid
             col = int(pos.x() // cell)
             row = int((pos.y() - top - oy) // cell)
@@ -1582,17 +1745,25 @@ class Editor(QWidget):
             item.start_editing(0)
             return True
         m = sc._text_margins
-        size = float(sc.default_size or 16)
-        h = max(36.0, size * 2.2)
-        pad = 10.0                       # borda interna da caixa: o cursor fica no ponto clicado
-        left, right = m["left"], sc.page_w - m["right"]
-        x = max(left, min(pos.x() - pad, right - 80))
-        w = max(80.0, min(240.0, right - x))
-        y = max(m["top"], min(pos.y() - top - h / 2, sc.page_h - m["bottom"] - h))
-        item = self._add("text", w, h, "Caixa de texto", at=QPointF(x + w / 2, top + y + h / 2), select=False,
-                         text="", html="", fontSize=sc.default_size, autoBox=True)
-        item.setSelected(True)
-        item.start_editing()
+        x = max(m["left"], min(pos.x(), sc.page_w - m["right"] - 4))
+        y = max(top + m["top"], min(pos.y(), top + sc.page_h - m["bottom"] - 4))
+        story = sc.story
+        story.clear_pending()
+        doc = story.document()
+        layout = doc.documentLayout()
+        last = layout.blockBoundingRect(doc.lastBlock())
+        local = story.mapFromScene(QPointF(x, y))
+        sc.setFocusItem(story)
+        story.setFocus(Qt.FocusReason.MouseFocusReason)
+        if local.y() <= last.bottom():
+            hit = layout.hitTest(local, Qt.HitTestAccuracy.FuzzyHit)
+            c = story.textCursor()
+            c.setPosition(max(0, hit))
+            story.setTextCursor(c)
+            if not c.block().text() and c.block().textList() is None and local.x() - m["left"] > 12:
+                story.set_pending(local, reuse_block=True)
+            return True
+        story.set_pending(local)
         return True
 
     def start_cells(self, item, column: int) -> None:
@@ -1712,6 +1883,10 @@ class Editor(QWidget):
                 textfmt.indent(t, value)
             elif action == "spacing":
                 textfmt.set_line_spacing(t, value)
+            elif action == "after":
+                textfmt.set_paragraph_spacing(t, value)
+            elif action == "spacing3":
+                textfmt.set_spacing(t, *value)
             elif action == "named":
                 textfmt.apply_named_style(t, value, self.scene.default_size)
         self.history.break_group()
@@ -1794,6 +1969,9 @@ class Editor(QWidget):
             return False
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and c.currentList() is not None and not c.block().text():
             textfmt.remove_list(item)
+            return True
+        if key == Qt.Key.Key_Backspace and not mods and textfmt.leave_list_item(item):
+            self.history.break_group()
             return True
         return False
 

@@ -68,7 +68,7 @@ class RubberShape(QGraphicsItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor(theme.ACCENT), 1.5, Qt.PenStyle.DashLine))
         r = QRectF(self.a, self.b).normalized()
-        if self.kind in ("line", "arrow", "connector"):
+        if self.kind in ("line", "arrow", "connector", "dashed"):
             painter.drawLine(self.a, self.b)
         elif self.kind == "ellipse":
             painter.drawEllipse(r)
@@ -282,6 +282,10 @@ class CanvasView(QGraphicsView):
                 self.scene().addItem(self.rubber)
                 event.accept()
                 return
+            if self.tool == "select" and not event.modifiers() and self.editor.top_clickable(pos) is None \
+                    and self.editor.page_click(pos):
+                event.accept()
+                return
             if self.tool == "connector":
                 src = self.editor.block_at(pos)
                 if src is not None:
@@ -310,7 +314,7 @@ class CanvasView(QGraphicsView):
             return
         if self.rubber is not None:
             a = self.rubber.a
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and self.rubber.kind not in ("line", "arrow", "connector"):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and self.rubber.kind not in ("line", "arrow", "connector", "dashed"):
                 side = max(abs(pos.x() - a.x()), abs(pos.y() - a.y()))
                 pos = QPointF(a.x() + math.copysign(side, pos.x() - a.x()), a.y() + math.copysign(side, pos.y() - a.y()))
             self.rubber.set(a, pos)

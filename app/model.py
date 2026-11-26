@@ -36,8 +36,8 @@ STICKER_EMOJI = [
     "🏠", "🚗", "✈️", "☕", "🍰", "🐱", "☀️", "🌧️", "🔒", "🔑", "➡️", "⬇️",
 ]
 
-SHAPE_KINDS = ["rectangle", "ellipse", "diamond", "triangle", "line", "arrow"]
-SHAPE_TITLES = {"rectangle": "Retângulo", "ellipse": "Elipse", "diamond": "Losango",
+SHAPE_KINDS = ["rectangle", "ellipse", "diamond", "triangle", "line", "arrow", "dashed"]
+SHAPE_TITLES = {"dashed": "Tracejada", "rectangle": "Retângulo", "ellipse": "Elipse", "diamond": "Losango",
                 "triangle": "Triângulo", "line": "Linha", "arrow": "Seta"}
 
 PAPER_KINDS = [("plain", "Liso"), ("ruled", "Caderno"), ("grid", "Quadriculado"), ("checker", "Xadrez")]

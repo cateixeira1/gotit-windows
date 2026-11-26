@@ -111,8 +111,12 @@ class FormatBar(QFrame):
         self.highlight.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.align = tool_button("align-left", "Alinhamento")
         self.align.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.lists = tool_button("list", "Listas")
+        self.lists = tool_button("list", "Listas (ou escreva \"- \" ou \"1. \" no começo da linha)")
         self.lists.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.spacing = tool_button("line-spacing", "Espaçamento entre linhas e parágrafos")
+        self.spacing.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.proof = tool_button("spellcheck", "Revisar o texto (ortografia e gramática, pelo assistente)")
+        self.proof.clicked.connect(editor.proofread)
         self.more_text = tool_button("more", "Mais opções de texto")
         self.more_text.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.zoom = QToolButton()
@@ -139,10 +143,11 @@ class FormatBar(QFrame):
             line.setFixedHeight(22)
             return line
         self.text_widgets = [self.style_combo, self.font_combo, self.size_combo, self.bold, self.italic, self.underline,
-                             self.strike, self.color, self.highlight, self.align, self.lists, self.more_text]
+                             self.strike, self.color, self.highlight, self.align, self.lists, self.spacing, self.proof,
+                             self.more_text]
         for w in (self.sidebar, self.title, sep(), self.undo, self.redo, sep(), self.style_combo, self.font_combo,
                   self.size_combo, self.bold, self.italic, self.underline, self.strike, self.color, self.highlight,
-                  self.align, self.lists, self.more_text):
+                  self.align, self.lists, self.spacing, self.proof, self.more_text):
             row.addWidget(w)
         row.addStretch(1)
         for w in (self.add_cards, self.zoom, sep(), self.pages, self.tools, self.note_menu):
@@ -176,9 +181,11 @@ class FormatBar(QFrame):
         m = QMenu(self)
         m.addAction(icons.icon("indent"), "Aumentar recuo").triggered.connect(lambda: ed.fmt("indent", 1))
         m.addAction(icons.icon("outdent"), "Diminuir recuo").triggered.connect(lambda: ed.fmt("indent", -1))
-        sp = m.addMenu("Espaço entre linhas")
-        for f in (1.0, 1.15, 1.5, 2.0):
-            sp.addAction(f"{f:g}".replace(".", ",")).triggered.connect(lambda _=False, v=f: ed.fmt("spacing", v))
+        self.keep_action = m.addAction(icons.icon("keep-next"), "Manter com o parágrafo seguinte")
+        self.keep_action.setCheckable(True)
+        self.keep_action.triggered.connect(ed.set_keep_with_next)
+        m.aboutToShow.connect(lambda: self.keep_action.setChecked(ed.current_keep()))
+        m.addAction(icons.icon("signature"), "Linha de assinatura…").triggered.connect(ed.insert_signature)
         m.addSeparator()
         m.addAction("Aumentar a fonte (Ctrl+])").triggered.connect(lambda: ed.fmt("grow", 1))
         m.addAction("Diminuir a fonte (Ctrl+[)").triggered.connect(lambda: ed.fmt("grow", -1))
@@ -187,6 +194,26 @@ class FormatBar(QFrame):
         m.addAction(icons.icon("note"), "Ligar a outra nota…").triggered.connect(ed.link_to_note)
         m.addAction(icons.icon("find"), "Localizar e substituir… (Ctrl+H)").triggered.connect(ed.find_replace)
         self.more_text.setMenu(m)
+        m = QMenu(self)
+        self.spacing_actions = []
+        for f in (1.0, 1.15, 1.5, 2.0, 2.5, 3.0):
+            a = m.addAction(f"{f:g}".replace(".", ","))
+            a.setCheckable(True)
+            a.triggered.connect(lambda _=False, v=f: ed.fmt("spacing", v))
+            self.spacing_actions.append((f, a))
+        m.addSeparator()
+        self.space_after = m.addAction("Espaço depois do parágrafo")
+        self.space_after.setCheckable(True)
+        self.space_after.triggered.connect(lambda on: ed.fmt("after", 8.0 if on else 0.0))
+        m.addAction("Personalizar…").triggered.connect(ed.custom_spacing)
+
+        def refresh():
+            factor, _, after = ed.current_spacing()
+            for f, a in self.spacing_actions:
+                a.setChecked(abs(f - factor) < 0.01)
+            self.space_after.setChecked(after > 0.5)
+        m.aboutToShow.connect(refresh)
+        self.spacing.setMenu(m)
         m = QMenu(self)
         m.addAction(icons.icon("fit"), "Ajustar à largura").triggered.connect(lambda: ed.view.fit_width())
         m.addAction(icons.icon("zoom-in"), "Ampliar (Ctrl++)").triggered.connect(lambda: ed.view.set_zoom(ed.view.zoom() * 1.25))
@@ -348,7 +375,8 @@ class ToolsPanel(QScrollArea):
                                 ("pdf-annotate", "PDF para\nanotar", ed.choose_pdf_annotate), ("video", "Vídeo", ed.choose_video),
                                 ("mic", "Gravar\náudio", ed.record_audio), ("wave", "Arquivo\nde áudio", ed.choose_audio),
                                 ("sticker", "Sticker", ed.choose_sticker), ("calendar", "Calendário", ed.insert_calendar),
-                                ("connector", "Conexão", lambda: ed.set_tool("connector"))):
+                                ("connector", "Conexão", lambda: ed.set_tool("connector")),
+                                ("signature", "Assinatura", ed.insert_signature)):
             t = Tile(icon, title, tall=True)
             t.clicked.connect(lambda _=False, f=fn: f())
             if title == "Conexão":

@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import (QBrush, QColor, QFont, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextFormat,
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextFormat,
                            QTextListFormat)
 
 NAMED_STYLE_PROP = QTextFormat.Property.UserProperty + 1
@@ -162,6 +162,14 @@ def alignment(item) -> Qt.AlignmentFlag:
     return item.textCursor().blockFormat().alignment()
 
 
+def _neighbor_list(block, style):
+    """Lista do parágrafo anterior, se for do mesmo tipo (o item volta para ela e a numeração
+    continua, em vez de recomeçar do 1)."""
+    prev = block.previous()
+    lst = prev.textList() if prev.isValid() else None
+    return lst if lst is not None and lst.format().style() == style else None
+
+
 def toggle_list(item, style: QTextListFormat.Style) -> None:
     c = cursor_for(item)
     current_list = c.currentList()
@@ -174,11 +182,231 @@ def toggle_list(item, style: QTextListFormat.Style) -> None:
         fmt.setStyle(style)
         current_list.setFormat(fmt)
     else:
+        doc = item.document()
+        first = doc.findBlock(c.selectionStart())
+        lst = _neighbor_list(first, style)
+        if lst is not None:
+            block = first
+            while block.isValid() and block.position() <= c.selectionEnd():
+                lst.add(block)
+                block = block.next()
+        else:
+            fmt = QTextListFormat()
+            fmt.setStyle(style)
+            fmt.setIndent(1)
+            c.createList(fmt)
+    c.endEditBlock()
+
+
+AUTO_BULLET = re.compile(r"^\s*([-*•–])\s$")
+AUTO_NUMBER = re.compile(r"^\s*(\d{1,3})[.)]\s$")
+AUTO_LETTER = re.compile(r"^\s*([a-z])\)\s$")
+
+
+def auto_list(item) -> bool:
+    """Depois de um espaço no começo da linha: "- " (ou "* ", "• ") vira marcador; "1. ", "1) "
+    vira lista numerada (continua a lista de cima se for o número seguinte); "a) " vira lista
+    com letras. Fica num passo de desfazer próprio: Ctrl+Z volta ao "- " escrito."""
+    c = item.textCursor()
+    if c.hasSelection() or c.currentList() is not None or c.currentTable() is not None:
+        return False
+    head = c.block().text()[:c.positionInBlock()]
+    style, start = None, 1
+    if AUTO_BULLET.match(head):
+        style = QTextListFormat.Style.ListDisc
+    elif (m := AUTO_NUMBER.match(head)):
+        style, start = QTextListFormat.Style.ListDecimal, int(m.group(1))
+    elif (m := AUTO_LETTER.match(head)):
+        style, start = QTextListFormat.Style.ListLowerAlpha, ord(m.group(1)) - ord("a") + 1
+    if style is None:
+        return False
+    c.beginEditBlock()
+    c.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+    c.removeSelectedText()
+    lst = _neighbor_list(c.block(), style)
+    if lst is not None and (style == QTextListFormat.Style.ListDisc or lst.count() + lst.format().start() == start):
+        lst.add(c.block())
+    else:
         fmt = QTextListFormat()
         fmt.setStyle(style)
         fmt.setIndent(1)
+        if start != 1:
+            fmt.setStart(start)
         c.createList(fmt)
     c.endEditBlock()
+    item.setTextCursor(c)
+    return True
+
+
+def leave_list_item(item) -> bool:
+    """Backspace no começo de um item: o parágrafo sai da lista (o texto fica) e os itens de
+    baixo continuam na lista, renumerados."""
+    c = item.textCursor()
+    lst = c.currentList()
+    if lst is None or c.hasSelection() or not c.atBlockStart():
+        return False
+    c.beginEditBlock()
+    block = c.block()
+    lst.remove(block)
+    bf = block.blockFormat()
+    bf.setIndent(0)
+    bc = QTextCursor(block)
+    bc.setBlockFormat(bf)
+    c.endEditBlock()
+    return True
+
+
+# ---------------------------------------------------------------- parágrafos: manter com o próximo
+KEEP, AUTO_BREAK = 1, 2      # bits do userState do bloco (vai junto no HTML: -qt-user-state)
+
+
+def state_bits(block) -> int:
+    v = block.userState()
+    return 0 if v < 0 else v
+
+
+def set_bits(block, bits: int, on: bool) -> None:
+    v = state_bits(block)
+    block.setUserState((v | bits) if on else (v & ~bits))
+
+
+def keeps_with_next(block) -> bool:
+    return bool(state_bits(block) & KEEP) or block.blockFormat().headingLevel() > 0
+
+
+def set_keep_with_next(item, on: bool) -> None:
+    c = cursor_for(item)
+    doc = item.document()
+    block = doc.findBlock(c.selectionStart())
+    end = c.selectionEnd()
+    while block.isValid() and block.position() <= end:
+        set_bits(block, KEEP, on)
+        block = block.next()
+    doc.contentsChanged.emit()
+
+
+def keep_breaks(doc, page_h: float) -> set[int]:
+    """Números dos parágrafos que precisam começar na página seguinte para ficar com o próximo.
+    Calcula numa cópia do documento (sem as quebras automáticas atuais), de cima para baixo."""
+    work = doc.clone()
+    work.setDefaultFont(doc.defaultFont())
+    work.setDocumentMargin(doc.documentMargin())
+    work.setPageSize(doc.pageSize())          # (setTextWidth apagaria a altura da página)
+    rf = work.rootFrame().frameFormat()
+    of = doc.rootFrame().frameFormat()
+    for side in ("Top", "Bottom", "Left", "Right"):
+        getattr(rf, "set" + side + "Margin")(getattr(of, side[0].lower() + side[1:] + "Margin")())
+    work.rootFrame().setFrameFormat(rf)
+    block = work.firstBlock()
+    while block.isValid():
+        if state_bits(doc.findBlockByNumber(block.blockNumber())) & AUTO_BREAK:
+            c = QTextCursor(block)
+            bf = block.blockFormat()
+            bf.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_Auto)
+            c.setBlockFormat(bf)
+        block = block.next()
+    layout = work.documentLayout()
+    need: set[int] = set()
+
+    def page_of(y: float) -> int:
+        return int(y // page_h)
+    block = work.firstBlock()
+    guard = 0
+    while block.isValid() and guard < 2000:
+        guard += 1
+        nxt = block.next()
+        src = doc.findBlockByNumber(block.blockNumber())
+        if nxt.isValid() and keeps_with_next(src) and block.text().strip():
+            r, rn = layout.blockBoundingRect(block), layout.blockBoundingRect(nxt)
+            last_y = r.bottom() - 2          # a última linha está na página do fim do parágrafo
+            first_n = rn.top()
+            if page_of(last_y + 1) != page_of(first_n + 1):
+                start = block       # a corrente toda (vários "manter") desce junto
+                while start.previous().isValid() and keeps_with_next(doc.findBlockByNumber(start.previous().blockNumber())) \
+                        and start.previous().text().strip():
+                    start = start.previous()
+                top = layout.blockBoundingRect(start).top()
+                prev = start.previous()
+                at_page_top = not prev.isValid() or page_of(layout.blockBoundingRect(prev).bottom() - 1) != page_of(top + 1)
+                if not at_page_top and start.blockNumber() not in need:
+                    need.add(start.blockNumber())
+                    c = QTextCursor(start)
+                    bf = start.blockFormat()
+                    bf.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_AlwaysBefore)
+                    c.setBlockFormat(bf)
+                    block = start
+                    continue
+        block = nxt
+    return need
+
+
+def apply_keep_breaks(doc, need: set[int]) -> bool:
+    """Põe/tira as quebras automáticas para chegar em ``need``. Junta ao último passo de desfazer
+    (não vira um passo próprio). Devolve True se mudou algo."""
+    have = set()
+    block = doc.firstBlock()
+    while block.isValid():
+        if state_bits(block) & AUTO_BREAK:
+            have.add(block.blockNumber())
+        block = block.next()
+    if have == need:
+        return False
+    c = QTextCursor(doc)
+    c.joinPreviousEditBlock()
+    for n in have | need:
+        block = doc.findBlockByNumber(n)
+        if not block.isValid():
+            continue
+        bc = QTextCursor(block)
+        bf = block.blockFormat()
+        bf.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_AlwaysBefore if n in need
+                              else QTextFormat.PageBreakFlag.PageBreak_Auto)
+        bc.setBlockFormat(bf)
+        set_bits(block, AUTO_BREAK, n in need)
+    c.endEditBlock()
+    return True
+
+
+# ---------------------------------------------------------------- assinatura
+def insert_signature(item, name: str, second: str = "", place_date: str = "", width_pt: float = 220.0) -> None:
+    """Linha de assinatura centralizada: (local e data), espaço para assinar, a linha, o nome e
+    uma segunda linha opcional (cargo, OAB, CPF). Tudo "mantido com o próximo" para não se
+    separar entre páginas."""
+    c = item.textCursor()
+    c.beginEditBlock()
+    if c.block().text().strip():
+        c.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+        c.insertBlock()
+    base = QTextBlockFormat()
+    base.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+    base.setTopMargin(0)
+    base.setBottomMargin(0)
+    plain = QTextCharFormat()
+    font = item.document().defaultFont()
+    fm = QFontMetricsF(font)
+    unders = "_" * max(20, int(width_pt / max(1.0, fm.horizontalAdvance("_"))))
+    rows = []
+    if place_date:
+        rows += [place_date, ""]
+    rows += ["", unders, name or "Nome"]
+    if second:
+        rows.append(second)
+    first = True
+    blocks = []
+    for text in rows:
+        if not first:
+            c.insertBlock(base, plain)
+        else:
+            c.setBlockFormat(base)
+            c.setCharFormat(plain)
+            first = False
+        c.insertText(text, plain)
+        blocks.append(c.block())
+    for b in blocks[:-1]:
+        set_bits(b, KEEP, True)
+    c.endEditBlock()
+    item.setTextCursor(c)
+
 
 
 def remove_list(item) -> None:
@@ -221,6 +449,15 @@ def set_line_spacing(item, factor: float) -> None:
     c = cursor_for(item)
     bf = QTextBlockFormat()
     bf.setLineHeight(factor * 100, 1)   # ProportionalHeight
+    c.mergeBlockFormat(bf)
+
+
+def set_spacing(item, factor: float, before: float, after: float) -> None:
+    c = cursor_for(item)
+    bf = QTextBlockFormat()
+    bf.setLineHeight(factor * 100, 1)
+    bf.setTopMargin(before)
+    bf.setBottomMargin(after)
     c.mergeBlockFormat(bf)
 
 

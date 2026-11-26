@@ -412,6 +412,74 @@ class LinkDialog(QDialog):
         return url, self.text.text().strip()
 
 
+MESES = ("janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro",
+         "outubro", "novembro", "dezembro")
+
+
+def data_por_extenso(d: date | None = None) -> str:
+    d = d or date.today()
+    return f"{d.day} de {MESES[d.month - 1]} de {d.year}"
+
+
+class SignatureDialog(QDialog):
+    """Linha de assinatura: nome, segunda linha (cargo, OAB, CPF) e local e data (opcionais)."""
+
+    def __init__(self, parent=None, settings=None):
+        super().__init__(parent)
+        self.setWindowTitle("Linha de assinatura")
+        self.setMinimumWidth(440)
+        lay = QFormLayout(self)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("Nome de quem assina")
+        self.second = QLineEdit()
+        self.second.setPlaceholderText("(opcional) cargo, OAB, CPF…")
+        self.place = QLineEdit()
+        self.place.setPlaceholderText("(opcional) cidade")
+        self.with_date = QCheckBox(f"Pôr local e data ({data_por_extenso()})")
+        self.with_date.toggled.connect(self.place.setEnabled)
+        self.place.setEnabled(False)
+        lay.addRow("Nome", self.name)
+        lay.addRow("Segunda linha", self.second)
+        lay.addRow(self.with_date)
+        lay.addRow("Local", self.place)
+        lay.addRow(buttons(self, "Inserir"))
+
+    def values(self) -> tuple[str, str, str]:
+        place = ""
+        if self.with_date.isChecked():
+            city = self.place.text().strip()
+            place = (city + ", " if city else "") + data_por_extenso() + "."
+        return self.name.text().strip(), self.second.text().strip(), place
+
+
+class LineSpacingDialog(QDialog):
+    def __init__(self, parent=None, factor: float = 1.0, before: float = 0.0, after: float = 0.0):
+        super().__init__(parent)
+        self.setWindowTitle("Espaçamento")
+        lay = QFormLayout(self)
+        self.factor = QDoubleSpinBox()
+        self.factor.setRange(0.8, 5.0)
+        self.factor.setSingleStep(0.05)
+        self.factor.setDecimals(2)
+        self.factor.setValue(factor)
+        self.factor.setSuffix(" linha(s)")
+        self.before = QDoubleSpinBox()
+        self.before.setRange(0, 96)
+        self.before.setSuffix(" pt")
+        self.before.setValue(before)
+        self.after = QDoubleSpinBox()
+        self.after.setRange(0, 96)
+        self.after.setSuffix(" pt")
+        self.after.setValue(after)
+        lay.addRow("Entre linhas", self.factor)
+        lay.addRow("Antes do parágrafo", self.before)
+        lay.addRow("Depois do parágrafo", self.after)
+        lay.addRow(buttons(self, "Aplicar"))
+
+    def values(self) -> tuple[float, float, float]:
+        return self.factor.value(), self.before.value(), self.after.value()
+
+
 class CalendarDialog(QDialog):
     def __init__(self, day: date, parent=None):
         super().__init__(parent)

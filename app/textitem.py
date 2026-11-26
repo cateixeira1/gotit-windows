@@ -17,6 +17,15 @@ class EditableText(QGraphicsTextItem):
         self.document().undoCommandAdded.connect(self._undo_added)
         self.setOpenExternalLinks(False)
 
+    issues: list = []            # trechos apontados pela revisão (sublinhado vermelho)
+    current_issue = None
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        if self.issues:
+            import proofread
+            proofread.paint_issues(self, painter)
+
     def editor(self):
         sc = self.scene()
         return getattr(sc, "editor", None) if sc else None
@@ -48,6 +57,8 @@ class EditableText(QGraphicsTextItem):
                 event.accept()
                 return
         super().keyPressEvent(event)
+        if ed is not None and event.key() == Qt.Key.Key_Space and not event.modifiers() & ~Qt.KeyboardModifier.ShiftModifier:
+            ed.after_space(self)
 
     def focusInEvent(self, event) -> None:
         super().focusInEvent(event)

@@ -45,6 +45,17 @@ def fmt_time(seconds: float) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def line_pen(color, width: float, dash: str | None) -> QPen:
+    """Caneta de contorno: contínua, tracejada ("dashed") ou pontilhada ("dotted")."""
+    pen = QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    if dash == "dashed":
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        pen.setDashPattern([4.0, 2.6])
+    elif dash == "dotted":
+        pen.setDashPattern([0.01, 2.2])
+    return pen
+
+
 class BlockItem(QGraphicsObject):
     kind = "block"
     resizable = True
@@ -398,6 +409,22 @@ class TextBlock(BlockItem):
         self.text.setDefaultTextColor(qcolor(state.get("foreground"), "#1F2933"))
         self.on_resized()
 
+    click_edits = True       # um clique (sem arrastar) já põe o cursor no texto; formas pedem duplo clique
+
+    def mousePressEvent(self, event) -> None:
+        self._press_at = event.scenePos() if event.button() == Qt.MouseButton.LeftButton else None
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        press, resizing = getattr(self, "_press_at", None), self._drag
+        self._press_at = None
+        super().mouseReleaseEvent(event)
+        ed = self.canvas.editor
+        if (press is not None and resizing is None and not self.editing and self.click_edits and ed is not None
+                and ed.tool == "select" and (event.scenePos() - press).manhattanLength() < 4
+                and len(self.canvas.selectedItems()) <= 1):
+            self.start_editing(event.pos())
+
     def start_editing(self, pos: QPointF | None = None) -> None:
         self.text.set_editing(True)
         self.text.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -450,7 +477,7 @@ class TextBoxItem(TextBlock):
         else:
             painter.setBrush(Qt.BrushStyle.NoBrush)
         if border:
-            painter.setPen(QPen(qcolor(border), float(self.data_state.get("lineWidth") or 1)))
+            painter.setPen(line_pen(qcolor(border), float(self.data_state.get("lineWidth") or 1), self.data_state.get("lineDash")))
         elif not fill and (self.isSelected() or self.editing or not self.text.document().toPlainText()) \
                 and not getattr(self.canvas, "exporting", False):
             painter.setPen(QPen(QColor("#B8C2CC"), 1 * self._ui_scale(), Qt.PenStyle.DashLine))
@@ -464,6 +491,7 @@ class TextBoxItem(TextBlock):
 
 
 class TableItem(TextBlock):
+    click_edits = False
     """Tabela simples: células de texto, linhas e colunas, linha de cabeçalho, bordas."""
     kind = "table"
     auto_height = True
@@ -534,6 +562,7 @@ class TableItem(TextBlock):
 
 
 class ShapeItem(TextBlock):
+    click_edits = False
     """Retângulo, elipse, losango e triângulo, com cor de contorno e de preenchimento e texto dentro."""
     kind = "shape"
     padding = 10.0
@@ -588,7 +617,7 @@ class ShapeItem(TextBlock):
         painter.setBrush(qcolor(fill) if fill else Qt.BrushStyle.NoBrush)
         width = float(self.data_state.get("lineWidth") or 2)
         stroke = self.data_state.get("stroke") or "#1F2933"
-        painter.setPen(QPen(qcolor(stroke), width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(line_pen(qcolor(stroke), width, self.data_state.get("lineDash"))
                        if width > 0 else Qt.PenStyle.NoPen)
         painter.drawPath(self.outline())
 
@@ -746,7 +775,7 @@ class LineItem(BlockItem):
     def paint_content(self, painter):
         width = float(self.data_state.get("lineWidth") or 2)
         color = qcolor(self.data_state.get("stroke") or "#1F2933")
-        painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setPen(line_pen(color, width, self.data_state.get("lineDash")))
         painter.drawLine(self.p1, self.p2)
         if self.data_state.get("shape") == "arrow":
             draw_arrow_head(painter, self.p1, self.p2, width, color)
@@ -1185,8 +1214,7 @@ class ConnectorItem(QGraphicsPathItem):
         color = qcolor(style.get("color") or "#334155")
         width = float(style.get("width") or 2)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(color, width, Qt.PenStyle.DashLine if style.get("chronology") else Qt.PenStyle.SolidLine,
-                   Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        pen = line_pen(color, width, "dashed" if style.get("chronology") else style.get("lineDash"))
         if self.isSelected():
             glow = QPen(QColor(47, 111, 181, 90), width + 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(glow)

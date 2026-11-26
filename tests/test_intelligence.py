@@ -138,3 +138,18 @@ def test_transcription_real_model(window, qapp, tmp_path):
     assert "error" not in got, got
     assert "country" in got["text"].lower()
     speech.shutdown()
+
+
+@pytest.mark.skipif(not (MODELS / "gemma-4-E2B-it.litertlm").exists(), reason="modelo ausente")
+def test_proofread_with_real_model(window, qapp):
+    pytest.importorskip("litert_lm")
+    import proofread
+    _install(window, models.ASSISTANT, ["gemma-4-E2B-it.litertlm"])
+    text = "Os cliente chegou atrasado na audiencia."
+    w = proofread.Worker(window, [text])
+    got = []
+    w.found.connect(lambda i, s: got.extend(s))
+    w._run()
+    fixes = {(s["trecho"], s["correcao"]) for s in got}
+    assert any("audiência" in c for _, c in fixes), fixes
+    assistant.release()

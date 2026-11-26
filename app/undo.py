@@ -20,6 +20,7 @@ class TextEntry:
     first: float = field(default_factory=time.monotonic)
     last: float = field(default_factory=time.monotonic)
     label: str = "Digitação"
+    steps: int = -1
 
 
 @dataclass
@@ -56,13 +57,20 @@ class History(QObject):
         if self.applying:
             return
         now = time.monotonic()
+        steps = item.document().availableUndoSteps()
+        top = self.entries[self.index - 1] if self.index else None
+        # edição juntada à anterior (joinPreviousEditBlock): o Qt avisa de novo, mas continua sendo
+        # um passo só no texto; não conta outro (senão o desfazer voltaria passos a mais)
+        if isinstance(top, TextEntry) and top.item is item and steps == top.steps and self.index == len(self.entries):
+            top.last = now
+            return
         self._truncate()
-        top = self.entries[-1] if self.entries else None
         if isinstance(top, TextEntry) and top.item is item and now - top.last < 1.0 and now - top.first < 5.0:
             top.count += 1
             top.last = now
+            top.steps = steps
         else:
-            self.entries.append(TextEntry(item))
+            self.entries.append(TextEntry(item, steps=steps))
             self.index += 1
         self._trim()
         self.changed.emit()

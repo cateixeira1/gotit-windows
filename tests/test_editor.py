@@ -427,27 +427,54 @@ def test_eraser_removes_recognized_shapes(window, qapp):
     assert [it for it in ed.scene.items_by_id.values() if it.kind == "shape"]
 
 
-def test_click_on_page_opens_text_box(window, qapp):
+def _click(ed, qapp, scene_pt):
+    from PySide6.QtTest import QTest
+    v = ed.view
+    QTest.mouseClick(v.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, v.mapFromScene(scene_pt))
+    pump(qapp, 20)
+
+
+def _type(ed, qapp, text):
+    from PySide6.QtTest import QTest
+    QTest.keyClicks(ed.view.viewport(), text)
+    pump(qapp, 20)
+
+
+def test_click_and_type_anywhere_on_the_page(window, qapp):
+    window.resize(1300, 900)
+    window.show()
+    pump(qapp, 50)
     ed = open_new(window, qapp)
+    ed.set_tool("select")
     sc = ed.scene
-    before = len(ed.history.entries)
-    assert not ed.click_off_story(QPointF(sc._text_margins["left"] + 20, 8))        # 1ª linha: texto da nota
-    assert ed.click_off_story(QPointF(300, 500))
-    box = [it for it in sc.items_by_id.values() if it.data_state.get("autoBox")][0]
+    m = sc._text_margins
+    story = sc.story
+    before = story.document().toPlainText()
+    _click(ed, qapp, QPointF(300, 420))
+    assert story.pending is not None
+    _click(ed, qapp, QPointF(250, 500))           # clicar e sair sem digitar: nada muda
+    assert story.document().toPlainText() == before
+    _type(ed, qapp, "Oi")
+    c = story.textCursor()
+    rect = story.document().documentLayout().blockBoundingRect(c.block())
+    assert c.block().text() == "Oi"
+    assert abs(rect.center().y() - 500) < 20                     # na altura do clique
+    assert abs(m["left"] + c.blockFormat().leftMargin() - 250) < 1   # e no ponto do clique
+    ed.undo()
+    assert story.document().toPlainText() == before            # um passo desfaz tudo
+    # clique fora das margens: vai para o ponto mais próximo dentro delas
+    _click(ed, qapp, QPointF(8, 600))
+    assert story.pending is not None and abs(story.pending.x() - m["left"]) < 1
+    # caixa de texto: um clique já edita
+    ed.insert_text_box()
+    pump(qapp, 20)
+    box = [it for it in sc.items_by_id.values() if it.kind == "text"][0]
+    _type(ed, qapp, "caixa")
+    ed.stop_all_editing()
+    sc.clearSelection()
+    _click(ed, qapp, box.text.mapToScene(QPointF(14, 10)))
     assert box.editing
-    box.stop_editing()                       # vazia: some, sem deixar passo de desfazer
-    pump(qapp, 20)
-    assert box.block_id not in sc.items_by_id and len(ed.history.entries) == before
-    assert ed.click_off_story(QPointF(300, 500))
-    box = [it for it in sc.items_by_id.values() if it.data_state.get("autoBox")][0]
-    box.text.textCursor().insertText("lembrete")
-    box.stop_editing()
-    pump(qapp, 20)
-    assert box.block_id in sc.items_by_id
-    assert ed.click_off_story(QPointF(300, 700)) and box.block_id in sc.items_by_id   # selecionada: só tira a seleção
-    assert not [it for it in sc.items_by_id.values() if it.data_state.get("autoBox") and it is not box]
-    simple = open_new(window, qapp, simple=True)
-    assert not simple.click_off_story(QPointF(300, 500))
+
 
 
 def _answers(ed):
@@ -522,24 +549,29 @@ def test_grid_paper_handwriting_one_symbol_per_square(window, qapp, monkeypatch)
 def test_grid_paper_typing_square_by_square(window, qapp):
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QKeyEvent
+    window.resize(1300, 900)
+    window.show()
+    pump(qapp, 50)
     ed, cell = _grid_note(window, qapp)
+    ed.set_tool("select")
     sc = ed.scene
-    before = len(ed.history.entries)
-    assert ed.click_off_story(QPointF(3.5 * cell, 18.5 * cell))
+    before = ed.history.index
+    _click(ed, qapp, QPointF(3.5 * cell, 18.5 * cell))          # clique de verdade num quadrado qualquer
     item = [it for it in sc.items_by_id.values() if it.kind == "cells"][0]
     assert item.editing
-    for ch in "3.4=":
-        item.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, 0, Qt.KeyboardModifier.NoModifier, ch))
+    _type(ed, qapp, "3.4=")
     st = item.state()
     assert st["text"] == "3.4=" and st["answer"] == "12"
     assert abs(st["frame"]["x"] - 3 * cell) < 0.5 and abs(st["frame"]["y"] - 18 * cell) < 0.5
     assert item.chars()[4] == ("1", True)                # o 12 começa no quadrado seguinte ao "="
     item.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier))
-    assert not item.editing and len(ed.history.entries) == before + 1
+    assert not item.editing and ed.history.index == before + 1
+    _click(ed, qapp, QPointF(4.5 * cell, 18.5 * cell))          # clicar na conta volta a editar nela
+    assert item.editing and item.cursor == 1
+    ed.stop_all_editing()
     ed.undo()
     assert not [it for it in sc.items_by_id.values() if it.kind == "cells"]
-    # clique e sai sem digitar: não sobra nada
-    assert ed.click_off_story(QPointF(3.5 * cell, 25.5 * cell))
+    _click(ed, qapp, QPointF(3.5 * cell, 25.5 * cell))          # clica e sai sem digitar: não sobra nada
     ed.stop_all_editing()
     assert not [it for it in sc.items_by_id.values() if it.kind == "cells"] and ed.history.index == before
 
@@ -562,3 +594,200 @@ def test_recent_notes_include_folders(window, qapp):
     cards = window.sidebar.findChildren(sidebar.NoteCard)
     mine = [c for c in cards if c.info.id == a]
     assert mine and mine[0].folder == "Clientes"
+
+
+def test_auto_lists_and_renumbering(window, qapp):
+    window.resize(1300, 900)
+    window.show()
+    pump(qapp, 50)
+    ed = open_new(window, qapp)
+    story = ed.scene.story
+    ed.scene.setFocusItem(story)
+    story.cursor_to_end()
+    from PySide6.QtTest import QTest
+    QTest.keyClicks(ed.view.viewport(), "1. um")
+    pump(qapp, 10)
+    c = story.textCursor()
+    lst = c.currentList()
+    assert lst is not None and c.block().text() == "um"
+    for word in ("dois", "tres"):
+        QTest.keyClick(ed.view.viewport(), Qt.Key.Key_Return)
+        QTest.keyClicks(ed.view.viewport(), word)
+    pump(qapp, 10)
+    doc = story.document()
+    dois = doc.findBlockByNumber(doc.blockCount() - 2)
+    assert dois.text() == "dois" and lst.itemNumber(dois) == 1
+    # tira o "dois" da lista (Backspace no começo): o "tres" vira o 2º, o texto fica
+    c = QTextCursor(dois)
+    story.setTextCursor(c)
+    QTest.keyClick(ed.view.viewport(), Qt.Key.Key_Backspace)
+    tres = doc.lastBlock()
+    assert dois.textList() is None and dois.text() == "dois"
+    assert tres.textList() is lst and lst.itemNumber(tres) == 1 and lst.itemText(tres).startswith("2")
+    # "- " vira marcador; Ctrl+Z volta ao texto "- "
+    story.cursor_to_end()
+    QTest.keyClick(ed.view.viewport(), Qt.Key.Key_Return)
+    QTest.keyClick(ed.view.viewport(), Qt.Key.Key_Return)
+    QTest.keyClicks(ed.view.viewport(), "- ")
+    pump(qapp, 10)
+    assert story.textCursor().currentList() is not None
+    ed.undo()
+    assert story.textCursor().currentList() is None and story.textCursor().block().text() == "- "
+
+
+def test_keep_with_next_moves_heading_down(window, qapp):
+    import textfmt
+    ed = open_new(window, qapp)
+    story = ed.scene.story
+    doc = story.document()
+    layout = doc.documentLayout()
+    page_h = ed.scene.page_h
+    page = lambda b: int((layout.blockBoundingRect(b).top() + 1) // page_h)
+    # linhas até o título cair sozinho no pé da 1ª página
+    for k in range(10, 200):
+        c = QTextCursor(doc)
+        c.select(QTextCursor.SelectionType.Document)
+        c.insertText("\n".join(f"linha {i}" for i in range(k)) + "\nTítulo\nParágrafo do título")
+        title = doc.lastBlock().previous()
+        if page(title) == 0 and page(title.next()) == 1:
+            break
+    else:
+        raise AssertionError("título não ficou sozinho no pé")
+    story.setTextCursor(QTextCursor(title))
+    ed.scene.setFocusItem(story)
+    ed.set_keep_with_next(True)
+    assert page(title) == page(title.next()) == 1
+    assert textfmt.state_bits(title) & textfmt.AUTO_BREAK
+    html = doc.toHtml()
+    assert "-qt-user-state" in html                                 # vai junto ao gravar
+
+
+def test_signature_line(window, qapp, monkeypatch):
+    import dialogs
+    ed = open_new(window, qapp)
+    story = ed.scene.story
+    ed.scene.setFocusItem(story)
+    story.cursor_to_end()
+
+    class Fake:
+        def __init__(self, *a, **k): pass
+        def exec(self): return 1
+        def values(self): return "Fulana de Tal", "OAB/SP 000.000", "São Paulo, 1 de dezembro de 2026."
+    monkeypatch.setattr(dialogs, "SignatureDialog", Fake)
+    ed.insert_signature()
+    text = story.document().toPlainText()
+    assert "Fulana de Tal" in text and "OAB/SP 000.000" in text and "_____" in text
+    block = story.document().findBlockByNumber(story.document().blockCount() - 2)
+    assert block.text() == "Fulana de Tal" and block.blockFormat().alignment() & Qt.AlignmentFlag.AlignHCenter
+
+
+def test_line_spacing_and_dashed_line(window, qapp):
+    ed = open_new(window, qapp)
+    story = ed.scene.story
+    ed.scene.setFocusItem(story)
+    ed.fmt("spacing3", (1.5, 0.0, 8.0))
+    assert ed.current_spacing() == (1.5, 0.0, 8.0)
+    ed.finish_shape_drag("dashed", QPointF(100, 300), QPointF(300, 300))
+    line = [it for it in ed.scene.items_by_id.values() if it.kind == "line"][0]
+    assert line.data_state.get("lineDash") == "dashed"
+
+
+def test_abnt_citation_and_references(window, qapp):
+    import abnt
+    ed = open_new(window, qapp)
+    story = ed.scene.story
+    doc = story.document()
+    c = QTextCursor(doc)
+    c.insertText("Como ensina a doutrina, o dano moral dispensa prova do prejuízo. Isso é pacífico.")
+    start = doc.toPlainText().index("o dano")
+    c.setPosition(start)
+    c.setPosition(doc.toPlainText().index(" Isso"), QTextCursor.MoveMode.KeepAnchor)
+    story.setTextCursor(c)
+    ed.scene.setFocusItem(story)
+    livro = {"tipo": "livro", "autores": ["Carlos Roberto Gonçalves"], "titulo": "Direito civil brasileiro",
+             "subtitulo": "responsabilidade civil", "edicao": "15", "local": "São Paulo", "editora": "Saraiva Jur", "ano": "2020"}
+    ed.apply_abnt(story, livro, "direta", "12")
+    text = doc.toPlainText()
+    assert "“o dano moral dispensa prova do prejuízo” (Gonçalves, 2020, p. 12)." in text
+    assert "REFERÊNCIAS" in text
+    assert "GONÇALVES, Carlos Roberto. Direito civil brasileiro: responsabilidade civil. 15. ed. São Paulo: Saraiva Jur, 2020." in text
+    # 2ª fonte: entra em ordem alfabética (Brasil antes de Gonçalves)
+    c = QTextCursor(doc)
+    c.setPosition(doc.toPlainText().index("Isso é pacífico"))
+    c.setPosition(doc.toPlainText().index("Isso é pacífico") + len("Isso é pacífico."), QTextCursor.MoveMode.KeepAnchor)
+    story.setTextCursor(c)
+    lei = {"tipo": "lei", "jurisdicao": "BRASIL", "especie": "Lei", "numero": "10.406", "data": "10 de janeiro de 2002",
+           "ementa": "Institui o Código Civil", "publicacao": "Diário Oficial da União", "data_pub": "11 jan. 2002"}
+    ed.apply_abnt(story, lei, "indireta", "")
+    text = doc.toPlainText()
+    assert "Isso é pacífico (Brasil, 2002)." in text
+    refs = text.split("REFERÊNCIAS", 1)[1]
+    assert refs.index("BRASIL. Lei nº 10.406") < refs.index("GONÇALVES, Carlos")
+    # negrito só no título da obra
+    b = doc.lastBlock()
+    assert b.text().startswith("GONÇALVES")
+    it = b.begin()
+    bolds = []
+    while not it.atEnd():
+        f = it.fragment()
+        if f.charFormat().fontWeight() >= 700:
+            bolds.append(f.text())
+        it += 1
+    assert bolds == ["Direito civil brasileiro"]
+    # um passo de desfazer tira a 2ª citação e a referência dela
+    ed.undo()
+    assert "(Brasil, 2002)" not in doc.toPlainText() and "BRASIL. Lei" not in doc.toPlainText()
+    # citação longa: parágrafo próprio com recuo de 4 cm e 10 pt
+    ed.redo()
+    c = QTextCursor(doc)
+    c.movePosition(QTextCursor.MoveOperation.Start)
+    c.insertText("Texto. " + "Palavra longa de citação direta " * 12 + "fim.")
+    c.insertBlock()
+    c.setPosition(len("Texto. "))
+    c.setPosition(len("Texto. ") + len("Palavra longa de citação direta " * 12 + "fim."), QTextCursor.MoveMode.KeepAnchor)
+    story.setTextCursor(c)
+    ed.apply_abnt(story, livro, "direta", "30")
+    quote = doc.findBlockByNumber(1)
+    assert quote.text().endswith("(Gonçalves, 2020, p. 30).") and not quote.text().startswith("“")
+    assert abs(quote.blockFormat().leftMargin() - abnt.LONG_INDENT) < 0.5
+    assert QTextCursor(quote).charFormat().fontPointSize() in (0, 10) or quote.begin().fragment().charFormat().fontPointSize() == 10
+    assert doc.toPlainText().count("GONÇALVES, Carlos") == 1          # a mesma fonte não repete
+
+
+def test_proofread_highlights_and_fixes(window, qapp, monkeypatch):
+    import proofread
+    ed = open_new(window, qapp)
+    story = ed.scene.story
+    doc = story.document()
+    QTextCursor(doc).insertText("Os cliente chegou na audiencia. Houveram problemas.")
+
+    class FakeWorker(proofread.Worker):
+        def start(self):
+            answer = ('[{"trecho": "Os cliente", "correcao": "O cliente", "motivo": "concordância"},'
+                      ' {"trecho": "audiencia", "correcao": "audiência", "motivo": "acento"},'
+                      ' {"trecho": "não existe", "correcao": "x"}, {"trecho": "chegou", "correcao": "chegou"}]')
+            for i, t in enumerate(self.texts):
+                self.found.emit(i, proofread.parse(answer, t))
+            self.finished.emit()
+    monkeypatch.setattr(proofread, "Worker", FakeWorker)
+    panel = proofread.ProofPanel(ed, story)
+    panel.start()
+    assert len(panel.live()) == 2 and story.issues                      # inválidas ficaram de fora
+    assert "corrija tudo" in panel.ask.text()
+    story.update()
+    pump(qapp, 10)
+    panel.show_issue(panel._next(-1))                                  # um por um
+    panel.skip_current()
+    panel.fix_current()
+    assert doc.toPlainText() == "Os cliente chegou na audiência. Houveram problemas."
+    ed.undo()
+    assert "audiencia" in doc.toPlainText()
+    # corrigir tudo: um passo de desfazer
+    panel2 = proofread.ProofPanel(ed, story)
+    panel2.start()
+    panel2.fix_all()
+    assert doc.toPlainText() == "O cliente chegou na audiência. Houveram problemas."
+    ed.undo()
+    assert doc.toPlainText() == "Os cliente chegou na audiencia. Houveram problemas."
+    panel.close()
+    panel2.close()
