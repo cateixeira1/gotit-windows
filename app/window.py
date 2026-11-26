@@ -151,6 +151,7 @@ class MainWindow(QMainWindow):
             self.store.restore(doc_id)
         self.stack.setCurrentWidget(self.editor)
         self.editor.open_document(doc, find, part)
+        self.fit_panels()                  # abrir a nota mostra as Ferramentas de novo: confere a largura
         self.setWindowTitle(f"{doc['title']} — {core.APP_NAME}")
         self.sidebar.set_active(doc_id)
 

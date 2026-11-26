@@ -55,6 +55,10 @@ def test_bar_two_rows_everything_visible_and_window_narrows(window, qapp):
     room = window.centralWidget().width()
     assert window.sidebar.isVisible() == (room - window.sidebar.width() >= window.CANVAS_MIN)
     assert ed.tools.isVisible() == (room - window.sidebar.width() - 300 >= window.CANVAS_MIN)
+    window.resize(900, 700)                           # abrir outra nota numa janela estreita
+    pump(qapp, 40)
+    open_new(window, qapp)
+    assert not ed.tools.isVisible() or window.centralWidget().width() - 300 - (window.sidebar.width() if window.sidebar.isVisible() else 0) >= window.CANVAS_MIN
 
 
 # ---------------------------------------------------------------------- títulos
