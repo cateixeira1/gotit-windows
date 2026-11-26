@@ -1,0 +1,68 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261126201820
+Username: runnervmbpeip\runneradmin
+RunAs User: runnervmbpeip\runneradmin
+Configuration Name: 
+Machine: runnervmbpeip (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -command . 'D:\a\_temp\9789e314-c828-494c-bcd1-67eba2393034.ps1'
+Process ID: 7800
+PSVersion: 5.1.26100.33822
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.33822
+BuildVersion: 10.0.26100.33822
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+
+==> Verificando o uv (gerenciador de Python)
+
+uv 0.13.10 (e3e7c1eac 2026-11-24 x86_64-pc-windows-msvc)
+
+==> Preparando o ambiente Python 3.12
+
+
+
+==> Empacotando o aplicativo
+
+
+==> Conferindo o pacote
+{
+  "version": "0.1.4",
+  "ok": true,
+  "checks": {
+    "fonts": [
+      "Caveat",
+      "Caveat",
+      "Indie Flower",
+      "Kalam",
+      "Patrick Hand"
+    ],
+    "fts5": true,
+    "pdfium": 8149,
+    "multimedia": true,
+    "mathink": [
+      "1+1="
+    ],
+    "mathsolve": true,
+    "windows_handwriting": [
+      "Microsoft English (US) Handwriting Recognizer",
+      "Microsoft English (Canada) Handwriting Recognizer"
+    ],
+    "litert_lm": true,
+    "faster_whisper": true,
+    "winrt.windows.ui.input.inking": true
+  }
+}
+
+==> Gerando o instalador
+
+
+PRONTO! Instalador gerado:
+  D:\a\gotit-windows\gotit-windows\dist\GotIt_Setup_0.1.4.exe
+**********************
+Windows PowerShell transcript end
+End time: 20261126202136
+**********************
