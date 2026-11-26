@@ -61,6 +61,7 @@ class BlockItem(QGraphicsObject):
     resizable = True
     rotatable = True
     keep_aspect = False
+    corner_aspect = False        # alças dos cantos mantêm a proporção (Shift solta); as dos lados esticam
     min_w, min_h = 24.0, 18.0
     text_capable = False
     _moving = False
@@ -142,6 +143,9 @@ class BlockItem(QGraphicsObject):
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()
+        # Winding: a alça que cobre a borda continua inteira clicável (com OddEven, o pedaço da
+        # alça dentro do objeto virava um buraco e o clique bem no centro da alça se perdia)
+        path.setFillRule(Qt.FillRule.WindingFill)
         path.addRect(self.content_shape_rect())
         if self.isSelected():
             s = self._ui_scale()
@@ -174,8 +178,14 @@ class BlockItem(QGraphicsObject):
             return
         painter.setBrush(QColor("white"))
         painter.setPen(QPen(ACCENT, 1.4 * s))
-        for p in self.handle_points():
-            painter.drawEllipse(p, HANDLE * s, HANDLE * s)
+        for i, p in enumerate(self.handle_points()):
+            if i < 4:
+                painter.drawEllipse(p, HANDLE * s, HANDLE * s)
+            else:
+                # alças dos lados em forma de pílula, como no Canva: puxar estica só naquela direção
+                long, short = HANDLE * 1.7 * s, HANDLE * 0.62 * s
+                w, h = (long, short) if i in (4, 6) else (short, long)
+                painter.drawRoundedRect(QRectF(p.x() - w, p.y() - h, 2 * w, 2 * h), short, short)
         if self.rotatable:
             top = QPointF(self.w / 2, 0)
             knob = QPointF(self.w / 2, -ROT_GAP * s)
@@ -265,7 +275,9 @@ class BlockItem(QGraphicsObject):
         elif vy == "b":
             bottom = max(p.y(), top + self.min_h)
         new = QRectF(QPointF(left, top), QPointF(right, bottom))
-        if (self.keep_aspect or event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and hx and vy and r0.height() > 0:
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        proportional = self.keep_aspect or (self.corner_aspect != shift)
+        if proportional and hx and vy and r0.height() > 0:
             ratio = r0.width() / r0.height()
             if new.width() / max(1e-6, new.height()) > ratio:
                 new.setWidth(new.height() * ratio) if hx == "r" else new.setLeft(new.right() - new.height() * ratio)
@@ -649,6 +661,7 @@ class StickyItem(TextBlock):
 
     def shape(self):
         path = QPainterPath()
+        path.setFillRule(Qt.FillRule.WindingFill)
         path.addRect(self.rect())
         if self.isSelected():
             s = self._ui_scale()
@@ -766,6 +779,7 @@ class LineItem(BlockItem):
         st = QPainterPathStroker()
         st.setWidth(max(10.0, float(self.data_state.get("lineWidth") or 2) + 8))
         out = st.createStroke(path)
+        out.setFillRule(Qt.FillRule.WindingFill)
         if self.isSelected():
             s = self._ui_scale()
             for p in self.handle_points():
@@ -784,8 +798,14 @@ class LineItem(BlockItem):
         s = self._ui_scale()
         painter.setBrush(QColor("white"))
         painter.setPen(QPen(ACCENT, 1.4 * s))
-        for p in self.handle_points():
-            painter.drawEllipse(p, HANDLE * s, HANDLE * s)
+        for i, p in enumerate(self.handle_points()):
+            if i < 4:
+                painter.drawEllipse(p, HANDLE * s, HANDLE * s)
+            else:
+                # alças dos lados em forma de pílula, como no Canva: puxar estica só naquela direção
+                long, short = HANDLE * 1.7 * s, HANDLE * 0.62 * s
+                w, h = (long, short) if i in (4, 6) else (short, long)
+                painter.drawRoundedRect(QRectF(p.x() - w, p.y() - h, 2 * w, 2 * h), short, short)
 
     def _resize_drag(self, handle, event):
         p = event.pos()
@@ -906,8 +926,42 @@ class StickerItem(BlockItem):
 
 # ====================================================================== mídias
 class ImageItem(BlockItem):
+    """Imagem: oito alças como no Canva — os cantos aumentam e diminuem sem deformar (com Shift,
+    livres); as dos lados esticam ou achatam à vontade, na horizontal e/ou na vertical."""
     kind = "image"
-    keep_aspect = True
+    keep_aspect = False
+    corner_aspect = True
+    min_w, min_h = 12.0, 12.0
+    CAPTION_FONT = 9.0
+
+    def caption_rect(self) -> QRectF:
+        cap = (self.data_state.get("caption") or "").strip()
+        if not cap:
+            return QRectF()
+        fm = QFontMetricsF(self._caption_font())
+        r = fm.boundingRect(QRectF(0, 0, max(40.0, self.w), 400), int(Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap), cap)
+        return QRectF(0, self.h + 4, max(40.0, self.w), min(r.height(), fm.lineSpacing() * 3) + 2)
+
+    def _caption_font(self) -> QFont:
+        f = QFont(self.canvas.default_family if hasattr(self.canvas, "default_family") else theme.default_text_family())
+        f.setPointSizeF(self.CAPTION_FONT)
+        f.setItalic(True)
+        return f
+
+    def boundingRect(self) -> QRectF:
+        r = super().boundingRect()
+        cap = self.caption_rect()
+        return r.united(cap.adjusted(-2, 0, 2, 2)) if not cap.isEmpty() else r
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        cap = (self.data_state.get("caption") or "").strip()
+        if cap:
+            painter.save()
+            painter.setFont(self._caption_font())
+            painter.setPen(QColor("#52606D"))
+            painter.drawText(self.caption_rect(), int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), cap)
+            painter.restore()
 
     def image_rect_source(self, img: QImage) -> QRectF:
         crop = self.data_state.get("crop")

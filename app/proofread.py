@@ -1,9 +1,13 @@
 """Revisão gramatical pelo assistente (Gemma 4 E2B, no computador).
 
-O texto vai em partes de alguns parágrafos; para cada parte o modelo devolve uma lista JSON de
-erros (trecho exato, correção e motivo). O app confere cada sugestão — o trecho tem de existir no
-texto e a correção tem de ser diferente — e destaca os trechos na nota. No fim pergunta se é para
-corrigir tudo (um passo de desfazer) ou revisar um por um.
+O texto vai em partes de ~1200 caracteres, frase por frase e numeradas; o modelo devolve só as
+frases que tinham erro, já corrigidas, e o app compara palavra por palavra para apontar o que
+mudou (trecho, correção e o tipo de erro). Reescritas grandes são descartadas. Cada frase aparece
+assim que chega. No fim pergunta se é para corrigir tudo (um passo de desfazer) ou um por um.
+
+Medido num computador de 2 núcleos (26/11/2026), num texto de 3.500 caracteres com 11 erros: a lista
+em JSON com explicações levava cerca de 30 s por trecho de 360 caracteres; assim, 38 s no texto
+inteiro, com o primeiro erro na tela em 5 s, achando 8 dos 11 sem nenhum falso alarme.
 
 É um modelo pequeno: acha boa parte dos erros de ortografia, acentuação e concordância, mas pode
 deixar passar alguns e sugerir coisas que não são erro. Por isso nada é trocado sem a pessoa pedir.
@@ -17,60 +21,187 @@ import threading
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QTextCursor
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QProgressBar, QPushButton,
+                               QVBoxLayout)
 
 import theme
 
-SYSTEM = "Você revisa textos em português do Brasil. Responda só com JSON."
-CHUNK = 700
+SYSTEM = "Você é um revisor de textos em português do Brasil."
+CHUNK = 1200          # caracteres por pedido (frases inteiras)
+
+# Abreviações que não terminam frase (Dr. Fulano, art. 186, p. 12, fls. 3...)
+ABBREV = {"dr", "dra", "drs", "dras", "sr", "sra", "srs", "sras", "srta", "prof", "profa", "exmo", "exma", "ilmo", "ilma",
+          "art", "arts", "inc", "incs", "par", "p", "pp", "fl", "fls", "n", "nº", "no", "nos", "v", "vs", "obs", "ex",
+          "min", "des", "rel", "proc", "ed", "vol", "cap", "cf", "etc", "ltda", "cia", "av", "r", "tel", "jan", "fev",
+          "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez", "s.a", "dt", "sec", "séc", "pág", "págs"}
 
 
-def prompt(text: str) -> str:
-    return ("Encontre erros de ortografia, acentuação, concordância, regência, crase e pontuação no texto abaixo. "
-            "Para cada erro, devolva um objeto com: \"trecho\" (copiado exatamente do texto, o menor trecho com o erro), "
-            "\"correcao\" (o trecho corrigido) e \"motivo\" (curto). Não aponte estilo nem preferências. "
-            "Se não houver erros, devolva []. Responda só com uma lista JSON.\n\nTexto:\n" + text)
+def prompt(numbered: str) -> str:
+    """Frases numeradas; o modelo devolve só as que tinham erro, já corrigidas. Escrever a frase
+    corrigida (e não uma lista em JSON com explicações) é várias vezes mais rápido no computador e
+    acha os mesmos erros; o app compara palavra por palavra e aponta só o que mudou."""
+    return ("Abaixo há frases numeradas. Corrija os erros de ortografia, acentuação, concordância, regência, crase "
+            "e pontuação. Responda só com as frases que tinham erro, com o mesmo número, já corrigidas, sem mudar "
+            "mais nada (nem estilo, nem palavras certas). Se nenhuma frase tiver erro, escreva só: nenhum\n\n" + numbered)
 
 
-def parse(answer: str, text: str) -> list[dict]:
-    """Sugestões válidas: trecho presente no texto, correção diferente, nada enorme."""
-    m = re.search(r"\[.*\]", answer or "", re.S)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(0))
-    except ValueError:
-        return []
-    out, seen = [], set()
-    for d in data if isinstance(data, list) else []:
-        if not isinstance(d, dict):
+def sentences(text: str) -> list[tuple[int, int]]:
+    """Frases de um parágrafo como (início, fim), sem cortar em "Dr.", "art. 186", "R$ 1.800,00"."""
+    out, start, i, n = [], 0, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ".!?…":
+            j = i + 1
+            while j < n and text[j] in ".!?…\"'”’)»":
+                j += 1
+            if j < n and text[j] == " ":
+                k = j
+                while k < n and text[k] == " ":
+                    k += 1
+                word = re.findall(r"[\w.]+$", text[start:i])
+                prev = (word[0] if word else "").lower().rstrip(".")
+                nxt = text[k] if k < n else ""
+                if (nxt.isupper() or nxt.isdigit() or nxt in "\"“«(—–-") and prev not in ABBREV and not (len(prev) == 1 and prev.isalpha()):
+                    if text[start:j].strip():
+                        out.append((start, j))
+                    start, i = k, k
+                    continue
+            i = j
             continue
-        t, c = str(d.get("trecho") or "").strip(), str(d.get("correcao") or d.get("correção") or "").strip()
-        why = str(d.get("motivo") or "").strip()
-        if not t or not c or t == c or len(t) > 160 or t not in text or (t, c) in seen:
-            continue
-        seen.add((t, c))
-        out.append({"trecho": t, "correcao": c, "motivo": why})
+        i += 1
+    if text[start:].strip():
+        out.append((start, len(text.rstrip())))
     return out
 
 
-def chunks(doc) -> list[list]:
-    """Partes de até ~700 caracteres, por parágrafo (os parágrafos vazios ficam de fora)."""
+_TOKEN = re.compile(r"\w+|\s+|[^\w\s]", re.UNICODE)
+_QUOTES = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'", "«": '"', "»": '"'})
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", s.lower()) if unicodedata.category(c) != "Mn")
+
+
+def motive(wrong: str, right: str) -> str:
+    """Rótulo curto do tipo de erro, pela diferença entre os trechos."""
+    if "à" in right.lower() and "à" not in wrong.lower():
+        return "Crase"
+    if _fold(wrong) == _fold(right):
+        return "Acentuação" if wrong.lower() != right.lower() else "Maiúscula/minúscula"
+    if re.sub(r"[\w\s]", "", wrong) != re.sub(r"[\w\s]", "", right) and re.sub(r"[^\w]", "", wrong) == re.sub(r"[^\w]", "", right):
+        return "Pontuação"
+    if "à" in right.lower() and "à" not in wrong.lower():
+        return "Crase"
+    ww, rw = wrong.split(), right.split()
+    if len(ww) == len(rw) == 1:
+        a, b = _fold(ww[0]), _fold(rw[0])
+        common = 0
+        while common < min(len(a), len(b)) and a[common] == b[common]:
+            common += 1
+        # só o fim da palavra mudou (plural, pessoa do verbo): concordância
+        if common >= 3 and common >= min(len(a), len(b)) - 3 and abs(len(a) - len(b)) <= 3 and a != b:
+            if max(len(a), len(b)) - common <= 3:
+                return "Concordância"
+        return "Ortografia"
+    return "Concordância ou regência"
+
+
+def diff(original: str, corrected: str) -> list[dict]:
+    """O que mudou entre a frase e a frase corrigida, em trechos pequenos (palavra a palavra).
+    Reescritas grandes (o modelo mudou a frase em vez de corrigir) são descartadas."""
+    import difflib
+    a = [m for m in _TOKEN.finditer(original)]
+    b = [m for m in _TOKEN.finditer(corrected.strip())]
+    ta = [m.group(0).translate(_QUOTES) if not m.group(0).isspace() else " " for m in a]
+    tb = [m.group(0).translate(_QUOTES) if not m.group(0).isspace() else " " for m in b]
+    sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+    # reescrita (e não correção): as letras da frase mudaram demais
+    if difflib.SequenceMatcher(None, _fold(original), _fold(corrected), autojunk=False).ratio() < 0.72:
+        return []
+    ops = [op for op in sm.get_opcodes() if op[0] != "equal"]
+
+    def nwords(i1, i2):
+        return sum(1 for t in ta[i1:i2] if re.match(r"\w", t))
+    # junta mudanças vizinhas (separadas só por um espaço) num trecho de até 3 palavras:
+    # "Os cliente chegou" -> "Os clientes chegaram" aparece como uma correção só
+    merged = []
+    for op in ops:
+        if merged and op[1] - merged[-1][2] <= 1 and all(not t.strip() for t in ta[merged[-1][2]:op[1]]):
+            prev = merged[-1]
+            pure = prev[0] != "replace" or op[0] != "replace"
+            if pure or nwords(prev[1], op[2]) <= 3:
+                merged[-1] = ("replace", prev[1], op[2], prev[3], op[4])
+                continue
+        merged.append(op)
+    out = []
+    for tag, i1, i2, j1, j2 in merged:
+        # trecho com palavras inteiras; inserção pura ganha a palavra vizinha como âncora
+        if i1 == i2:
+            if i1 > 0:
+                i1 -= 1
+                j1 -= 1
+                while i1 > 0 and not ta[i1].strip():
+                    i1 -= 1
+                    j1 -= 1
+            elif i2 < len(ta):
+                i2 += 1
+                j2 += 1
+        if i1 >= len(a) or i2 <= i1:
+            continue
+        start, end = a[i1].start(), a[i2 - 1].end()
+        wrong = original[start:end]
+        right = "".join(m.group(0) for m in b[j1:j2]) if j2 > j1 else ""
+        # ponto final que o modelo esqueceu, espaços e aspas diferentes: não é erro
+        if wrong.strip() in (".", "") and i2 >= len(ta) - 1 and not right.strip():
+            continue
+        if wrong.translate(_QUOTES).strip() == right.translate(_QUOTES).strip():
+            continue
+        # ponto final acrescentado no fim (títulos e itens de lista não levam): não é erro
+        if i2 >= len(ta) - 1 and right.rstrip(".") == wrong.rstrip("."):
+            continue
+        nw, nr = len(re.findall(r"\w+", wrong)), len(re.findall(r"\w+", right))
+        if nw > 4 or nr > 5 or len(wrong) > 48:
+            continue
+        out.append({"start": start, "trecho": wrong, "correcao": right, "motivo": motive(wrong, right)})
+    return out
+
+
+def chunks(doc) -> list[list[QTextCursor]]:
+    """Partes de até ~1200 caracteres, feitas de frases inteiras. Cada frase é um QTextCursor com a
+    frase selecionada (acompanha o que a pessoa escrever enquanto a revisão anda)."""
     parts, cur, size = [], [], 0
     b = doc.firstBlock()
     while b.isValid():
         t = b.text()
         if t.strip():
-            if cur and size + len(t) > CHUNK:
-                parts.append(cur)
-                cur, size = [], 0
-            c = QTextCursor(b)
-            cur.append(c)
-            size += len(t)
+            for s, e in sentences(t):
+                if cur and size + (e - s) > CHUNK:
+                    parts.append(cur)
+                    cur, size = [], 0
+                c = QTextCursor(doc)
+                c.setPosition(b.position() + s)
+                c.setPosition(b.position() + e, QTextCursor.MoveMode.KeepAnchor)
+                cur.append(c)
+                size += e - s
         b = b.next()
     if cur:
         parts.append(cur)
     return parts
+
+
+def numbered(texts: list[str]) -> str:
+    return "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+
+
+def parse_lines(answer: str, count: int) -> dict[int, str]:
+    """Linhas "N. frase corrigida" da resposta (só números de frases que existem)."""
+    out = {}
+    for line in answer.split("\n"):
+        m = re.match(r"^\s*\**\s*(\d{1,3})\s*[.)\-:]\s*\**\s*(.+?)\s*$", line)
+        if m and 1 <= int(m.group(1)) <= count:
+            out[int(m.group(1)) - 1] = m.group(2).strip().strip("*").strip()
+    return out
 
 
 class Issue:
@@ -82,35 +213,53 @@ class Issue:
         return not self.done and self.cursor.selectedText() == self.trecho
 
 
-def locate(block_cursors: list, sugg: dict, taken: list) -> QTextCursor | None:
-    """Acha o trecho nos parágrafos da parte (o texto pode ter mudado desde o envio)."""
-    for bc in block_cursors:
-        block = bc.block()
-        text = block.text()
-        start = 0
-        while True:
-            i = text.find(sugg["trecho"], start)
-            if i < 0:
-                break
-            pos = block.position() + i
-            if not any(t.selectionStart() <= pos < t.selectionEnd() for t in taken):
-                c = QTextCursor(block.document())
-                c.setPosition(pos)
-                c.setPosition(pos + len(sugg["trecho"]), QTextCursor.MoveMode.KeepAnchor)
-                return c
-            start = i + 1
-    return None
+def physical_threads() -> int:
+    """Núcleos físicos (os "lógicos" do hyper-threading disputam a mesma unidade de cálculo)."""
+    import os
+    import sys
+    n = os.cpu_count() or 4
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class INFO(ctypes.Structure):
+                _fields_ = [("mask", ctypes.c_size_t), ("rel", wintypes.DWORD), ("pad", ctypes.c_byte * 16)]
+            size = wintypes.DWORD(0)
+            ctypes.windll.kernel32.GetLogicalProcessorInformation(None, ctypes.byref(size))
+            buf = (INFO * (size.value // ctypes.sizeof(INFO)))()
+            if ctypes.windll.kernel32.GetLogicalProcessorInformation(buf, ctypes.byref(size)):
+                cores = sum(1 for i in buf if i.rel == 0)       # RelationProcessorCore
+                if cores:
+                    return max(1, cores)
+        except Exception:
+            pass
+    else:
+        try:
+            ids, phys = set(), "0"
+            for line in open("/proc/cpuinfo", encoding="utf-8"):
+                if line.startswith("physical id"):
+                    phys = line.split(":")[1].strip()
+                elif line.startswith("core id"):
+                    ids.add((phys, line.split(":")[1].strip()))
+            if ids:
+                return len(ids)
+        except Exception:
+            pass
+    return max(1, n // 2 if n >= 4 else n)
 
 
 class Worker(QObject):
-    found = Signal(int, list)          # parte, sugestões
-    progress = Signal(int, int)
+    """Lê as partes uma a uma e devolve cada frase corrigida assim que ela chega (o que foi achado
+    aparece na hora, sem esperar a parte inteira)."""
+    found = Signal(int, int, list)      # parte, frase, sugestões
+    progress = Signal(float)            # 0..1
     finished = Signal()
     failed = Signal(str)
 
-    def __init__(self, window, texts: list[str]):
+    def __init__(self, window, parts: list[list[str]]):
         super().__init__()
-        self.window, self.texts = window, texts
+        self.window, self.parts = window, parts
         self.cancel = threading.Event()
 
     def start(self) -> None:
@@ -119,29 +268,45 @@ class Worker(QObject):
     def _run(self) -> None:
         try:
             import assistant
-            import litert_lm
             engine = assistant.get_engine(self.window)
-            for i, text in enumerate(self.texts):
+            total = sum(len(t) for part in self.parts for t in part) or 1
+            done = 0
+            for pi, texts in enumerate(self.parts):
                 if self.cancel.is_set():
                     break
-                self.progress.emit(i + 1, len(self.texts))
-                conv = engine.create_conversation(
-                    system_message=SYSTEM, sampler_config=litert_lm.SamplerConfig(temperature=0.1),
-                    max_output_tokens=900, thinking_config=litert_lm.ThinkingConfig(enable_thinking=False))
-                out = ""
+                sizes = [len(t) for t in texts]
+                conv = assistant.conversation(engine, SYSTEM, temperature=0.1,
+                                              max_tokens=min(1400, int(sum(sizes) / 2.2) + 120))
+                out, emitted = "", set()
+
+                def flush(final: bool) -> None:
+                    lines = out.split("\n")
+                    ready = "\n".join(lines if final else lines[:-1])
+                    for si, fixed in parse_lines(ready, len(texts)).items():
+                        if si in emitted:
+                            continue
+                        emitted.add(si)
+                        sugg = diff(texts[si], fixed)
+                        if sugg:
+                            self.found.emit(pi, si, sugg)
+                        self.progress.emit(min(1.0, (done + sum(sizes[:si + 1])) / total))
                 try:
-                    for msg in conv.send_message_async(prompt(text)):
+                    for msg in conv.send_message_async(prompt(numbered(texts))):
                         if self.cancel.is_set():
                             break
                         for part in msg.get("content", []) if isinstance(msg, dict) else []:
                             if part.get("type") == "text":
                                 out += part.get("text", "")
+                                if "\n" in part.get("text", ""):
+                                    flush(False)
+                    flush(True)
                 finally:
                     try:
                         conv.close()
                     except Exception:
                         pass
-                self.found.emit(i, parse(out, text))
+                done += sum(sizes)
+                self.progress.emit(done / total)
         except Exception as exc:
             self.failed.emit(f"A revisão parou: {type(exc).__name__}: {exc}")
             return
@@ -227,32 +392,51 @@ class ProofPanel(QDialog):
         self.skip_btn.hide()
         self.all_btn.setEnabled(False)
         self.one_btn.setEnabled(False)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        lay.insertWidget(1, self.bar)
         self.parts = chunks(item.document())
         self.worker = None
         self.row = -1
+        self.started = 0.0
 
     def start(self) -> None:
-        texts = ["\n".join(c.block().text() for c in part) for part in self.parts]
+        texts = [[c.selectedText() for c in part] for part in self.parts]
         if not texts:
             self.status.setText("Não há texto para revisar.")
+            self.bar.hide()
             return
-        self.status.setText(f"O assistente está lendo o texto ({len(texts)} parte{'s' if len(texts) > 1 else ''})…")
+        import time
+        self.started = time.monotonic()
+        self.status.setText("Revisando… os erros aparecem aqui assim que são achados.")
         self.worker = Worker(self.editor.window, texts)
-        self.worker.progress.connect(lambda i, n: self.status.setText(f"Lendo a parte {i} de {n}… "
-                                                                       f"({len(self.live())} possíveis erros até agora)"))
-        self.worker.found.connect(self.add_found)
-        self.worker.finished.connect(self.finish)
-        self.worker.failed.connect(lambda m: self.status.setText(m))
+        self.worker.progress.connect(self._progress, Qt.ConnectionType.QueuedConnection)
+        self.worker.found.connect(self.add_found, Qt.ConnectionType.QueuedConnection)
+        self.worker.finished.connect(self.finish, Qt.ConnectionType.QueuedConnection)
+        self.worker.failed.connect(lambda m: self.status.setText(m), Qt.ConnectionType.QueuedConnection)
         self.worker.start()
+
+    def _progress(self, frac: float) -> None:
+        self.bar.setValue(int(frac * 1000))
+        n = len(self.live())
+        found = "nenhum erro até agora" if not n else f"{n} possíve{'is' if n > 1 else 'l'} erro{'s' if n > 1 else ''} até agora"
+        self.status.setText(f"Revisando… {int(frac * 100)}% ({found})")
 
     def live(self) -> list[Issue]:
         return [i for i in self.issues if i.valid()]
 
-    def add_found(self, part: int, sugg: list) -> None:
+    def add_found(self, part: int, sentence: int, sugg: list) -> None:
         taken = [i.cursor for i in self.issues]
+        base = self.parts[part][sentence]
         for s in sugg:
-            c = locate(self.parts[part], s, taken)
-            if c is None:
+            c = QTextCursor(base.document())
+            pos = base.selectionStart() + s["start"]
+            c.setPosition(pos)
+            c.setPosition(pos + len(s["trecho"]), QTextCursor.MoveMode.KeepAnchor)
+            if c.selectedText() != s["trecho"] or any(t.selectionStart() < c.selectionEnd() and c.selectionStart() < t.selectionEnd()
+                                                       for t in taken):
                 continue
             iss = Issue(c, s["trecho"], s["correcao"], s["motivo"])
             self.issues.append(iss)
@@ -262,13 +446,16 @@ class ProofPanel(QDialog):
         self.item.update()
 
     def finish(self) -> None:
+        import time
+        self.bar.hide()
         n = len(self.live())
+        secs = f" em {time.monotonic() - self.started:.0f} s" if self.started else ""
         if not n:
-            self.status.setText("Revisão concluída: o assistente não achou erros.")
+            self.status.setText(f"Revisão concluída{secs}: o assistente não achou erros.")
             self.ask.setText("")
             return
-        self.status.setText(f"Revisão concluída: {n} possível erro destacado no texto." if n == 1 else
-                            f"Revisão concluída: {n} possíveis erros destacados no texto.")
+        self.status.setText(f"Revisão concluída{secs}: {n} possível erro destacado no texto." if n == 1 else
+                            f"Revisão concluída{secs}: {n} possíveis erros destacados no texto.")
         self.ask.setText("Quer que eu corrija tudo ou prefere revisar um por um?")
         self.all_btn.setEnabled(True)
         self.one_btn.setEnabled(True)

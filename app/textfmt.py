@@ -23,6 +23,7 @@ NAMED_STYLES = [
     ("body", "Corpo", 1.0, False, False, "#1F2933", 0),
     ("quote", "Citação", 1.0, False, True, "#4B5563", 24),
 ]
+QUOTE_INDENT = 24
 
 ALLOWED_LINK = re.compile(r"^(https?://|mailto:|gotit://nota/)", re.IGNORECASE)
 
@@ -173,6 +174,15 @@ def _neighbor_list(block, style):
 def toggle_list(item, style: QTextListFormat.Style) -> None:
     c = cursor_for(item)
     current_list = c.currentList()
+    if current_list is not None and c.block().blockFormat().marker() != NO_MARKER:
+        # lista de tarefas vira lista comum (as caixinhas saem)
+        c.beginEditBlock()
+        clear_markers(item)
+        fmt = current_list.format()
+        fmt.setStyle(style)
+        current_list.setFormat(fmt)
+        c.endEditBlock()
+        return
     if current_list is not None and current_list.format().style() == style:
         remove_list(item)
         return
@@ -198,6 +208,153 @@ def toggle_list(item, style: QTextListFormat.Style) -> None:
     c.endEditBlock()
 
 
+# ---------------------------------------------------------------- lista de tarefas (caixinhas)
+UNCHECKED = QTextBlockFormat.MarkerType.Unchecked
+CHECKED = QTextBlockFormat.MarkerType.Checked
+NO_MARKER = QTextBlockFormat.MarkerType.NoMarker
+
+
+def is_check_item(block) -> bool:
+    return block.textList() is not None and block.blockFormat().marker() != NO_MARKER
+
+
+def _set_marker(block, marker) -> None:
+    bc = QTextCursor(block)
+    bf = block.blockFormat()
+    bf.setMarker(marker)
+    bc.setBlockFormat(bf)
+
+
+def _blocks(item):
+    c = cursor_for(item)
+    doc = item.document()
+    block, end = doc.findBlock(c.selectionStart()), c.selectionEnd()
+    out = []
+    while block.isValid() and (block.position() <= end or not out):
+        out.append(block)
+        block = block.next()
+    return c, out
+
+
+def toggle_checklist(item) -> None:
+    """Lista de tarefas: cada parágrafo ganha uma caixinha para marcar. De novo tira a lista."""
+    c, blocks = _blocks(item)
+    c.beginEditBlock()
+    if all(is_check_item(b) for b in blocks):
+        for b in blocks:
+            _set_marker(b, NO_MARKER)
+        c.endEditBlock()
+        remove_list(item)
+        return
+    lst = blocks[0].textList()
+    if lst is None:
+        prev = blocks[0].previous()
+        if prev.isValid() and is_check_item(prev):
+            lst = prev.textList()
+            for b in blocks:
+                lst.add(b)
+        else:
+            fmt = QTextListFormat()
+            fmt.setStyle(QTextListFormat.Style.ListDisc)
+            fmt.setIndent(1)
+            c.createList(fmt)
+    else:
+        fmt = lst.format()
+        fmt.setStyle(QTextListFormat.Style.ListDisc)
+        lst.setFormat(fmt)
+    for b in blocks:
+        if b.blockFormat().marker() == NO_MARKER:
+            _set_marker(b, UNCHECKED)
+    c.endEditBlock()
+
+
+def clear_markers(item) -> None:
+    _, blocks = _blocks(item)
+    for b in blocks:
+        if b.blockFormat().marker() != NO_MARKER:
+            _set_marker(b, NO_MARKER)
+
+
+def toggle_check(block) -> None:
+    """Marca ou desmarca a caixinha do item."""
+    _set_marker(block, UNCHECKED if block.blockFormat().marker() == CHECKED else CHECKED)
+
+
+def checkbox_rect(item, block):
+    """Onde a caixinha do item é desenhada (coordenadas do texto)."""
+    from PySide6.QtCore import QRectF
+    layout = item.document().documentLayout()
+    br = layout.blockBoundingRect(block)
+    tl = block.layout()
+    if tl is None or tl.lineCount() == 0:
+        return None
+    line = tl.lineAt(0)
+    fm = QFontMetricsF(block.charFormat().font() if block.length() > 1 else item.document().defaultFont())
+    side = max(9.0, fm.ascent() * 0.95)
+    x = br.left() + line.x() - side - max(4.0, side * 0.45)
+    y = br.top() + line.y() + line.ascent() - side * 0.92
+    return QRectF(x, y, side, side)
+
+
+def list_kind(item) -> str | None:
+    c = item.textCursor()
+    lst = c.currentList()
+    if lst is None:
+        return None
+    if c.block().blockFormat().marker() != NO_MARKER:
+        return "check"
+    style = lst.format().style()
+    return "bullets" if style in (QTextListFormat.Style.ListDisc, QTextListFormat.Style.ListCircle,
+                                  QTextListFormat.Style.ListSquare) else "numbers"
+
+
+# ---------------------------------------------------------------- sobrescrito, subscrito, limpar
+def set_valign(item, kind: str) -> None:
+    """Sobrescrito ("super") ou subscrito ("sub"); de novo volta ao normal."""
+    target = QTextCharFormat.VerticalAlignment.AlignSuperScript if kind == "super" else QTextCharFormat.VerticalAlignment.AlignSubScript
+    fmt = QTextCharFormat()
+    fmt.setVerticalAlignment(QTextCharFormat.VerticalAlignment.AlignNormal if current(item).verticalAlignment() == target else target)
+    _merge(item, fmt)
+
+
+def clear_format(item) -> None:
+    """Tira negrito, itálico, sublinhado, cores, destaque, fonte e tamanho do trecho (fica o texto
+    no estilo do corpo). Links continuam."""
+    c = cursor_for(item)
+    if not c.hasSelection():
+        c.select(QTextCursor.SelectionType.WordUnderCursor)
+        if not c.hasSelection():
+            return
+    doc = item.document()
+    c.beginEditBlock()
+    start, end = c.selectionStart(), c.selectionEnd()
+    pos = start
+    while pos < end:
+        probe = QTextCursor(doc)
+        probe.setPosition(pos)
+        block = probe.block()
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            a, b = max(frag.position(), start), min(frag.position() + frag.length(), end)
+            if a < b:
+                old = frag.charFormat()
+                cf = QTextCharFormat()
+                if old.isAnchor():
+                    cf.setAnchor(True)
+                    cf.setAnchorHref(old.anchorHref())
+                    cf.setForeground(old.foreground())
+                    cf.setFontUnderline(True)
+                cur = QTextCursor(doc)
+                cur.setPosition(a)
+                cur.setPosition(b, QTextCursor.MoveMode.KeepAnchor)
+                cur.setCharFormat(cf)
+            it += 1
+        pos = block.position() + block.length()
+    c.endEditBlock()
+
+
+AUTO_CHECK = re.compile(r"^\s*\[\s?[xX]?\s?\]\s$")
 AUTO_BULLET = re.compile(r"^\s*([-*•–])\s$")
 AUTO_NUMBER = re.compile(r"^\s*(\d{1,3})[.)]\s$")
 AUTO_LETTER = re.compile(r"^\s*([a-z])\)\s$")
@@ -212,6 +369,17 @@ def auto_list(item) -> bool:
         return False
     head = c.block().text()[:c.positionInBlock()]
     style, start = None, 1
+    if AUTO_CHECK.match(head):
+        c.beginEditBlock()
+        checked = "x" in head.lower()
+        c.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+        c.removeSelectedText()
+        item.setTextCursor(c)
+        toggle_checklist(item)
+        if checked:
+            _set_marker(c.block(), CHECKED)
+        c.endEditBlock()
+        return True
     if AUTO_BULLET.match(head):
         style = QTextListFormat.Style.ListDisc
     elif (m := AUTO_NUMBER.match(head)):
@@ -250,6 +418,7 @@ def leave_list_item(item) -> bool:
     lst.remove(block)
     bf = block.blockFormat()
     bf.setIndent(0)
+    bf.setMarker(QTextBlockFormat.MarkerType.NoMarker)
     bc = QTextCursor(block)
     bc.setBlockFormat(bf)
     c.endEditBlock()
@@ -270,8 +439,18 @@ def set_bits(block, bits: int, on: bool) -> None:
     block.setUserState((v | bits) if on else (v & ~bits))
 
 
+HEADING_STYLES = {"title": 1, "subtitle": 2, "heading1": 1, "heading2": 2}
+
+
+def is_heading(block) -> bool:
+    bf = block.blockFormat()
+    return bf.headingLevel() > 0 or bf.property(NAMED_STYLE_PROP) in HEADING_STYLES
+
+
 def keeps_with_next(block) -> bool:
-    return bool(state_bits(block) & KEEP) or block.blockFormat().headingLevel() > 0
+    """Títulos (inclusive os do seletor de estilo) e parágrafos marcados ficam com o seguinte:
+    o título nunca fica sozinho no pé da página, longe do texto dele."""
+    return bool(state_bits(block) & KEEP) or is_heading(block)
 
 
 def set_keep_with_next(item, on: bool) -> None:
@@ -319,7 +498,9 @@ def keep_breaks(doc, page_h: float) -> set[int]:
         if nxt.isValid() and keeps_with_next(src) and block.text().strip():
             r, rn = layout.blockBoundingRect(block), layout.blockBoundingRect(nxt)
             last_y = r.bottom() - 2          # a última linha está na página do fim do parágrafo
-            first_n = rn.top()
+            # a primeira linha do próximo pode já ter descido para a outra página (o bloco
+            # começa no pé desta, mas a linha não cabe): vale onde a linha está
+            first_n = rn.top() + (nxt.layout().lineAt(0).y() if nxt.layout() and nxt.layout().lineCount() else 0)
             if page_of(last_y + 1) != page_of(first_n + 1):
                 start = block       # a corrente toda (vários "manter") desce junto
                 while start.previous().isValid() and keeps_with_next(doc.findBlockByNumber(start.previous().blockNumber())) \
@@ -422,6 +603,7 @@ def remove_list(item) -> None:
             bc = QTextCursor(block)
             bf = block.blockFormat()
             bf.setIndent(0)
+            bf.setMarker(QTextBlockFormat.MarkerType.NoMarker)
             bc.setBlockFormat(bf)
         block = block.next()
     c.endEditBlock()
@@ -507,7 +689,7 @@ def apply_named_style(item, style_id: str, base_size: float) -> None:
     spec = next((s for s in NAMED_STYLES if s[0] == style_id), None)
     if not spec:
         return
-    _, _, rel, bold, italic, color, left = spec
+    _, _, rel, bold, italic, color, extra = spec
     c = cursor_for(item)
     c.beginEditBlock()
     start, end = c.selectionStart(), c.selectionEnd()
@@ -521,14 +703,55 @@ def apply_named_style(item, style_id: str, base_size: float) -> None:
     cf.setFontItalic(italic)
     cf.setForeground(QBrush(QColor(color)))
     sel.mergeCharFormat(cf)
-    bf = QTextBlockFormat()
-    bf.setLeftMargin(left)
-    bf.setProperty(NAMED_STYLE_PROP, style_id)
-    if style_id in ("title", "heading1", "heading2"):
-        bf.setTopMargin(6)
-        bf.setBottomMargin(4)
-    sel.mergeBlockFormat(bf)
+    # o recuo do parágrafo (régua, "aumentar recuo") continua o mesmo: o título acompanha o texto;
+    # a Citação só soma o recuo dela ao que já havia (e o tira ao voltar para outro estilo)
+    block = item.document().findBlock(start)
+    while True:
+        bc = QTextCursor(block)
+        bf = block.blockFormat()
+        was = bf.property(NAMED_STYLE_PROP)
+        left = bf.leftMargin() - (QUOTE_INDENT if was == "quote" else 0) + extra
+        bf.setLeftMargin(max(0.0, left))
+        bf.setProperty(NAMED_STYLE_PROP, style_id)
+        bf.setHeadingLevel(HEADING_STYLES.get(style_id, 0))
+        if style_id in ("title", "heading1", "heading2"):
+            bf.setTopMargin(max(bf.topMargin(), 6))
+            bf.setBottomMargin(max(bf.bottomMargin(), 4))
+        bc.setBlockFormat(bf)
+        if block == endblock or not block.next().isValid():
+            break
+        block = block.next()
     c.endEditBlock()
+
+
+def body_after_heading(item) -> bool:
+    """Enter no fim de um título: o parágrafo novo volta a ser Corpo (como no Word)."""
+    c = item.textCursor()
+    block = c.block()
+    if c.hasSelection() or not is_heading(block) or c.position() != block.position() + len(block.text()) \
+            or not block.text().strip() or c.currentTable() is not None:
+        return False
+    base = item.document().defaultFont().pointSizeF() or 12
+    c.beginEditBlock()
+    bf = block.blockFormat()
+    nb = QTextBlockFormat(bf)
+    nb.setHeadingLevel(0)
+    nb.setProperty(NAMED_STYLE_PROP, "body")
+    nb.setTopMargin(0)
+    nb.setBottomMargin(0)
+    nb.setPageBreakPolicy(QTextFormat.PageBreakFlag.PageBreak_Auto)
+    if bf.alignment() & Qt.AlignmentFlag.AlignHCenter:
+        nb.setAlignment(Qt.AlignmentFlag.AlignLeft)
+    cf = QTextCharFormat(c.charFormat())
+    cf.setFontPointSize(base)
+    cf.setFontWeight(QFont.Weight.Normal)
+    cf.setFontItalic(False)
+    cf.setForeground(QBrush(QColor("#1F2933")))
+    c.insertBlock(nb, cf)
+    c.block().setUserState(-1)
+    c.endEditBlock()
+    item.setTextCursor(c)
+    return True
 
 
 def named_style(item) -> str | None:

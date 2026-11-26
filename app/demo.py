@@ -231,7 +231,7 @@ def show(win, screen: str, shot: str | None) -> None:
         dialog.append(d)
 
     def grab():
-        target = dialog[0] if dialog else win
+        target = dialog[0] if dialog and dialog[0].isWindow() else win
         pm = target.grab()
         if shot:
             pm.save(shot)

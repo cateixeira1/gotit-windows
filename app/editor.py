@@ -158,6 +158,8 @@ class Editor(QWidget):
         self._last_state = None
         self._ink_pending: list = []
         self._ink_times: dict = {}
+        hl = self.settings.value("lastHighlight", theme.HIGHLIGHTS[0][1])
+        self.last_highlight = hl if any(hl == v for _, v in theme.HIGHLIGHTS) else theme.HIGHLIGHTS[0][1]
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -170,8 +172,15 @@ class Editor(QWidget):
         self.pages_panel.hide()
         self.view = CanvasView(self)
         self.tools = ToolsPanel(self)
+        import ruler as ruler_mod
+        self.ruler = ruler_mod.Ruler(self)
+        center = QVBoxLayout()
+        center.setContentsMargins(0, 0, 0, 0)
+        center.setSpacing(0)
+        center.addWidget(self.ruler)
+        center.addWidget(self.view, 1)
         body.addWidget(self.pages_panel)
-        body.addWidget(self.view, 1)
+        body.addLayout(center, 1)
         body.addWidget(self.tools)
         lay.addLayout(body, 1)
         self.toast_label = QLabel(self.view)
@@ -199,7 +208,12 @@ class Editor(QWidget):
         self.bar.title.editingFinished.connect(self._title_edited)
         self.bar.pages.toggled.connect(self._toggle_pages)
         self.bar.tools.setChecked(True)
-        self.bar.tools.toggled.connect(self.tools.setVisible)
+        self.bar.tools.toggled.connect(self._toggle_tools)
+        self.bar.ruler.setChecked(self.settings.value("rulerVisible", "true") == "true")
+        self.ruler.setVisible(self.bar.ruler.isChecked())
+        self.bar.ruler.toggled.connect(self._toggle_ruler)
+        self.view.horizontalScrollBar().valueChanged.connect(self.ruler.update)
+        self.view.zoomChanged.connect(lambda *_: self.ruler.update())
         self.bar.set_fonts(theme.text_families())
         self.view.zoomChanged.connect(lambda z: self.bar.zoom.setText(f"{round(z * 100)}%"))
         self.view.visiblePageChanged.connect(self._visible_page)
@@ -1875,6 +1889,12 @@ class Editor(QWidget):
                                           "right": Qt.AlignmentFlag.AlignRight, "justify": Qt.AlignmentFlag.AlignJustify}[value])
             elif action == "bullets":
                 textfmt.toggle_list(t, QTextListFormat.Style.ListDisc)
+            elif action == "checklist":
+                textfmt.toggle_checklist(t)
+            elif action == "valign":
+                textfmt.set_valign(t, value)
+            elif action == "clear":
+                textfmt.clear_format(t)
             elif action == "numbers":
                 textfmt.toggle_list(t, QTextListFormat.Style.ListDecimal)
             elif action == "nolist":
@@ -1892,6 +1912,40 @@ class Editor(QWidget):
         self.history.break_group()
         self.content_changed()
         self._refocus(targets[0])
+
+    def pick_highlight(self, color: str) -> None:
+        """Escolher a cor do marca-texto: aplica no trecho e passa a ser a cor do clique no botão e
+        do arrastar com o botão direito do mouse."""
+        self.last_highlight = color
+        self.settings.setValue("lastHighlight", color)
+        self.bar.show_colors()
+        self.fmt("highlight", color)
+
+    def highlight_drag(self, item) -> None:
+        """Arrastou com o botão direito sobre o texto: destaca com a cor escolhida."""
+        self.history.break_group()
+        textfmt.set_highlight(item, self.last_highlight)
+        self.history.break_group()
+        c = item.textCursor()
+        c.clearSelection()
+        item.setTextCursor(c)
+        self.content_changed()
+
+    def cite_current(self) -> None:
+        targets = self.target_texts()
+        if targets:
+            self.cite_abnt(targets[0])
+
+    def _toggle_tools(self, on: bool) -> None:
+        getattr(self.window, "_auto_hidden", set()).discard("tools")
+        simple = bool(self.doc and self.doc["canvas"].get("simpleNote"))
+        self.tools.setVisible(on and not simple)
+
+    def _toggle_ruler(self, on: bool) -> None:
+        self.settings.setValue("rulerVisible", "true" if on else "false")
+        self.ruler.setVisible(on)
+        if on:
+            self.ruler.refresh(self.target_texts()[0] if self.target_texts() else None)
 
     def _refocus(self, item) -> None:
         if self.scene is None:
@@ -1924,14 +1978,20 @@ class Editor(QWidget):
             family = (fam[0] if isinstance(fam, list) and fam else None) or t.document().defaultFont().family()
             size = fmt.fontPointSize() or t.document().defaultFont().pointSizeF()
             align = t.textCursor().blockFormat().alignment()
+            va = fmt.verticalAlignment()
             state = {"bold": fmt.fontWeight() >= 600, "italic": fmt.fontItalic(), "underline": fmt.fontUnderline(),
                      "strike": fmt.fontStrikeOut(), "family": family, "size": round(size, 1),
                      "align": "center" if align & Qt.AlignmentFlag.AlignHCenter else "right" if align & Qt.AlignmentFlag.AlignRight
                      else "justify" if align & Qt.AlignmentFlag.AlignJustify else "left",
-                     "list": textfmt.list_style(t) is not None, "named": textfmt.named_style(t)}
+                     "list": textfmt.list_kind(t), "named": textfmt.named_style(t),
+                     "super": va == QTextCharFormat.VerticalAlignment.AlignSuperScript,
+                     "sub": va == QTextCharFormat.VerticalAlignment.AlignSubScript,
+                     "keep": textfmt.keeps_with_next(t.textCursor().block())}
         if state != self._last_state:
             self._last_state = state
             self.bar.show_state(state)
+        if self.ruler.isVisible():
+            self.ruler.refresh(targets[0] if targets else None)
 
     def handle_text_key(self, item, event) -> bool:
         key, mods = event.key(), event.modifiers()
@@ -1969,6 +2029,17 @@ class Editor(QWidget):
             return False
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and c.currentList() is not None and not c.block().text():
             textfmt.remove_list(item)
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and textfmt.is_check_item(c.block()) and not c.hasSelection():
+            # item novo da lista de tarefas começa desmarcado
+            bf = c.blockFormat()
+            bf.setMarker(textfmt.UNCHECKED)
+            c.insertBlock(bf, c.charFormat())
+            item.setTextCursor(c)
+            return True
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not mods & Qt.KeyboardModifier.ShiftModifier \
+                and textfmt.body_after_heading(item):
+            self.history.break_group()
             return True
         if key == Qt.Key.Key_Backspace and not mods and textfmt.leave_list_item(item):
             self.history.break_group()
@@ -2263,6 +2334,7 @@ class Editor(QWidget):
             a.triggered.connect(self._toggle_chrono)
             m.addSeparator()
         m.addAction(icons.icon("export"), "Exportar como PDF… (Ctrl+Shift+E)").triggered.connect(self.export_pdf)
+        m.addAction(icons.icon("pdf"), "Exportar para o Prumo PDF").triggered.connect(self.export_to_prumo)
         m.addAction(icons.icon("print"), "Imprimir… (Ctrl+P)").triggered.connect(self.print_note)
         m.addSeparator()
         m.addAction(icons.icon("link"), "Citada em…").triggered.connect(self.cited_by)
@@ -2371,6 +2443,25 @@ class Editor(QWidget):
             return
         self.export_pdf_to(dest)
         self.toast("PDF exportado.")
+
+    def export_to_prumo(self) -> None:
+        """A nota em PDF, aberta no Prumo PDF para trabalhar lá. Sem o Prumo instalado, a página
+        dele na Microsoft Store."""
+        if self.scene is None:
+            return
+        import prumo
+        exe = prumo.find()
+        if exe is None:
+            self.toast("O Prumo PDF não está instalado neste computador: abrindo a página dele na Microsoft Store.", 4500)
+            prumo.open_store()
+            return
+        self.save_now()
+        dest = prumo.pdf_path(self.doc.get("title") or "Nota")
+        self.export_pdf_to(str(dest))
+        if prumo.open_pdf(exe, str(dest)):
+            self.toast(f"Abrindo no Prumo PDF… (o PDF ficou em Documentos › {dest.parent.name})", 4500)
+        else:
+            QMessageBox.warning(self, "Prumo PDF", f"Não consegui abrir o Prumo PDF. O PDF foi salvo em:\n{dest}")
 
     def export_pdf_to(self, dest: str) -> None:
         sc = self.scene

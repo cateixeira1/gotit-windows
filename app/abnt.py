@@ -342,7 +342,7 @@ def make_dialog(parent, quote: str, known: list[dict], window=None):
         def __init__(self):
             super().__init__(parent)
             self.setWindowTitle("Citação ABNT")
-            self.setMinimumWidth(560)
+            self.setMinimumWidth(640)
             self.values: dict = {}
             lay = W.QVBoxLayout(self)
             shown = quote if len(quote) < 220 else quote[:200] + "…"
@@ -371,8 +371,15 @@ def make_dialog(parent, quote: str, known: list[dict], window=None):
             lay.addLayout(top)
             self.box = W.QWidget()
             self.form = W.QFormLayout(self.box)
-            self.form.setContentsMargins(0, 0, 0, 0)
-            lay.addWidget(self.box)
+            self.form.setContentsMargins(0, 0, 6, 0)
+            self.form.setFieldGrowthPolicy(W.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            # muitos campos (jurisprudência) rolam em vez de espremer as linhas
+            self.scroll = W.QScrollArea()
+            self.scroll.setWidgetResizable(True)
+            self.scroll.setFrameShape(W.QFrame.Shape.NoFrame)
+            self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.scroll.setWidget(self.box)
+            lay.addWidget(self.scroll, 1)
             self.fields: dict[str, W.QLineEdit] = {}
             row = W.QHBoxLayout()
             self.fill = W.QPushButton("Preencher a partir de um texto…")
@@ -429,6 +436,16 @@ def make_dialog(parent, quote: str, known: list[dict], window=None):
                 self.fields[key] = e
                 self.form.addRow(label + (" *" if required else ""), e)
             self.update_preview()
+            self._fit_height()
+
+        def _fit_height(self) -> None:
+            """A janela cresce até caber todos os campos (até 85% da tela; além disso, rola)."""
+            self.box.adjustSize()
+            want = self.box.sizeHint().height() + 4
+            screen = self.screen().availableGeometry().height() if self.screen() else 900
+            others = self.sizeHint().height() - self.scroll.sizeHint().height()
+            self.scroll.setMinimumHeight(max(80, min(want, int(screen * 0.85) - others)))
+            self.adjustSize()
 
         def use_known(self) -> None:
             src = self.known.currentData()

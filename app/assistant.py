@@ -11,8 +11,8 @@ import re
 import threading
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
@@ -123,11 +123,62 @@ def trimmed_summary(answer: str, plan: SummaryPlan) -> str:
     return summary + ("\n\n" + rest if rest else "")
 
 
+def question_count(text: str) -> int:
+    return min(8, max(3, word_count(text) // 120))
+
+
 def questions_prompt(title: str, text: str, truncated: bool) -> str:
+    """Perguntas para a pessoa testar se entendeu a nota: pontos principais da nota inteira, na
+    ordem, com o porquê e as consequências (não detalhes soltos); respostas todas no fim."""
     cut = "A nota foi cortada por ser longa; use só o trecho fornecido.\n" if truncated else ""
-    return ("Escreva 5 perguntas para revisar o conteúdo da nota abaixo, cada uma seguida da resposta "
-            "curta tirada da própria nota, no formato \"1. Pergunta\" e na linha seguinte \"Resposta: …\".\n"
+    n = question_count(text)
+    return (f"Leia a nota inteira abaixo e escreva {n} perguntas para a pessoa testar se entendeu e lembra do "
+            "conteúdo. Cubra os pontos principais da nota do começo ao fim, na ordem em que aparecem, uma pergunta "
+            "por ponto. Prefira perguntas que exijam entender o contexto: por que algo aconteceu ou importa, o que "
+            "foi decidido, quais as consequências, prazos, valores e próximos passos. Evite perguntas sobre "
+            "detalhes soltos e perguntas cuja resposta está escrita na própria pergunta. Cada pergunta deve poder "
+            "ser respondida só com a nota.\n"
+            "Formato: primeiro todas as perguntas, numeradas de 1 a "
+            f"{n}, sem as respostas. Depois, uma linha só com \"Respostas:\" e as respostas curtas (até 2 frases), "
+            "com os mesmos números.\n"
             f"{cut}{heading(title)}\n---\n{text}\n---")
+
+
+def quiz_layout(answer: str) -> str:
+    """Perguntas primeiro e as respostas todas no fim (para a pessoa se testar), mesmo que o modelo
+    tenha posto cada resposta logo depois da pergunta."""
+    questions, answers, in_answers, current = {}, {}, False, None
+    for raw in answer.replace("**", "").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower().rstrip(":")
+        if low in ("respostas", "gabarito"):
+            in_answers, current = True, None
+            continue
+        if low in ("perguntas", "perguntas para revisar"):
+            continue
+        m = re.match(r"^(\d{1,2})\s*[.)\-:]\s*(.*)$", line)
+        r = re.match(r"^(resposta|r)\s*[:.\-]\s*(.*)$", line, re.IGNORECASE)
+        if m:
+            num, body = int(m.group(1)), m.group(2).strip()
+            body = re.sub(r"^(pergunta|resposta)\s*:\s*", "", body, flags=re.IGNORECASE)
+            if in_answers:
+                answers[num] = body
+            else:
+                questions[num] = body
+            current = num
+        elif r and current is not None:
+            answers[current] = (answers.get(current, "") + " " + r.group(2)).strip()
+        elif current is not None:
+            target = answers if (in_answers or current in answers) else questions
+            target[current] = (target.get(current, "") + " " + line).strip()
+    if not questions:
+        return answer.strip()
+    out = ["Perguntas"] + [f"{n}. {q}" for n, q in sorted(questions.items())]
+    if answers:
+        out += ["", "Respostas"] + [f"{n}. {answers[n]}" for n in sorted(questions) if n in answers]
+    return "\n".join(out)
 
 
 def question_prompt(question: str, sources: list[dict]) -> str:
@@ -238,11 +289,8 @@ class Runner(QObject):
         for attempt in (1, 2):
             try:
                 engine = get_engine(self.window, self.status.emit)
-                import litert_lm
-                conv = engine.create_conversation(
-                    system_message=SYSTEM, sampler_config=litert_lm.SamplerConfig(temperature=0.3),
-                    max_output_tokens=self.max_tokens, thinking_config=litert_lm.ThinkingConfig(enable_thinking=False))
-                self.status.emit("Escrevendo…")
+                self.status.emit("Lendo a nota…")
+                conv = conversation(engine, SYSTEM, temperature=0.3, max_tokens=self.max_tokens)
                 try:
                     for msg in conv.send_message_async(self.prompt):
                         if self.cancel.is_set():
@@ -260,10 +308,31 @@ class Runner(QObject):
                 return
             except Exception as exc:
                 if attempt == 1 and not text:
+                    global _SPECULATIVE
+                    _SPECULATIVE = False   # repete sem a decodificação especulativa
                     release()          # carrega o modelo de novo uma vez e repete
                     continue
                 self.failed.emit(f"O assistente parou: {type(exc).__name__}: {exc}")
                 return
+
+
+_SPECULATIVE = True        # MTP: o mesmo texto, quase 2× mais rápido; desliga sozinho se o motor recusar
+
+
+def conversation(engine, system: str, temperature: float, max_tokens: int):
+    """Conversa nova com decodificação especulativa (MTP) quando o modelo e o motor aceitam: o
+    Gemma 4 E2B propõe vários tokens de uma vez e confere; o resultado é o mesmo, mais rápido."""
+    global _SPECULATIVE
+    import litert_lm
+    base = dict(system_message=system, sampler_config=litert_lm.SamplerConfig(temperature=temperature),
+                max_output_tokens=max_tokens, thinking_config=litert_lm.ThinkingConfig(enable_thinking=False))
+    if _SPECULATIVE:
+        try:
+            return engine.create_conversation(**base, speculative_decoding_config=litert_lm.SpeculativeDecodingConfig(
+                mode=litert_lm.SpeculativeDecodingMode.ON))
+        except Exception:
+            _SPECULATIVE = False
+    return engine.create_conversation(**base)
 
 
 def get_engine(window, status=None):
@@ -275,7 +344,8 @@ def get_engine(window, status=None):
             if status:
                 status("Carregando o modelo (alguns segundos na primeira vez)…")
             path = models.path_of(window.store.data_dir, models.ASSISTANT)
-            threads = max(1, (os.cpu_count() or 4) - 1)
+            import proofread
+            threads = proofread.physical_threads()
             _engine = litert_lm.Engine(str(path), backend=litert_lm.Backend.CPU(thread_count=threads), max_num_tokens=CONTEXT,
                                        cache_dir=str(models.folder(window.store.data_dir, models.ASSISTANT)))
         return _engine
@@ -311,29 +381,70 @@ class Bubble(QFrame):
         self.lay.addWidget(self.label)
 
 
-class AssistantPanel(QDialog):
+class PanelHeader(QWidget):
+    """Cabeçalho do balão: arrastar move o balão, sempre dentro da janela do app."""
+
+    def __init__(self, panel):
+        super().__init__()
+        self.panel = panel
+        self._grab = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._grab = e.globalPosition().toPoint() - self.panel.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if self._grab is not None:
+            self.panel.place(e.globalPosition().toPoint() - self._grab)
+
+    def mouseReleaseEvent(self, e):
+        self._grab = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+
+class AssistantPanel(QFrame):
+    """Balão do assistente, por cima da nota e sempre dentro da janela do app (não sai da tela
+    ao ser arrastado; acompanha a janela quando ela muda de tamanho)."""
+    MARGIN = 12
+
     def __init__(self, window):
         super().__init__(window)
         self.window = window
-        self.setWindowTitle("Assistente")
-        self.resize(460, 680)
-        self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setObjectName("assistantPanel")
+        self.setStyleSheet(f"#assistantPanel {{ background: {theme.WINDOW}; border: 1px solid #D9DEE3; border-radius: 14px; }}")
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 60))
+        self.setGraphicsEffect(shadow)
+        self.resize(440, 640)
         self.runner: Runner | None = None
         self.scope: list[str] = []
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12)
-        head = QHBoxLayout()
+        lay.setContentsMargins(12, 8, 12, 12)
+        header = PanelHeader(self)
+        head = QHBoxLayout(header)
+        head.setContentsMargins(0, 2, 0, 2)
         ic = QLabel()
         ic.setPixmap(icons.pixmap("sparkle", theme.TEAL, 22))
         t = QLabel("Assistente")
         t.setFont(theme.ui_font(13, True))
         self.where = QLabel("Gemma 4 E2B · neste computador")
         self.where.setStyleSheet(f"color: {theme.MUTED};")
+        close = QToolButton()
+        close.setIcon(icons.icon("close", theme.MUTED))
+        close.setToolTip("Fechar")
+        close.clicked.connect(self.hide)
         head.addWidget(ic)
         head.addWidget(t)
         head.addStretch()
         head.addWidget(self.where)
-        lay.addLayout(head)
+        head.addWidget(close)
+        lay.addWidget(header)
+        window.installEventFilter(self)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -375,6 +486,34 @@ class AssistantPanel(QDialog):
         self.input.returnPressed.connect(self.ask)
         self.model_box = None
         self.refresh_state()
+
+    # ------------------------------------------------------------------ posição
+    def bounds(self):
+        return self.window.rect().adjusted(self.MARGIN, self.MARGIN, -self.MARGIN, -self.MARGIN)
+
+    def place(self, top_left=None) -> None:
+        """Põe o balão no lugar pedido, mas sempre inteiro dentro da janela."""
+        area = self.bounds()
+        w = min(440, area.width())
+        h = min(max(360, self.height()), area.height())
+        if self.size() != QSize(w, h):
+            self.resize(w, h)
+        p = top_left if top_left is not None else self.pos()
+        x = max(area.left(), min(p.x(), area.right() - w + 1))
+        y = max(area.top(), min(p.y(), area.bottom() - h + 1))
+        self.move(x, y)
+
+    def dock(self) -> None:
+        """Canto inferior direito da nota, acima do botão do assistente."""
+        area = self.bounds()
+        h = min(640, area.height())
+        self.resize(min(440, area.width()), h)
+        self.place(area.bottomRight() - QPoint(self.width() + 74, h - 1))
+
+    def eventFilter(self, obj, ev):
+        if obj is self.window and ev.type() == QEvent.Type.Resize and self.isVisible():
+            self.place()
+        return False
 
     # ------------------------------------------------------------------ estado
     def refresh_state(self) -> None:
@@ -445,7 +584,8 @@ class AssistantPanel(QDialog):
             self._add(Bubble("A nota ainda não tem texto.", False))
             return
         self._add(Bubble("Perguntas para revisar", True))
-        self._run(questions_prompt(doc["title"], text, cut), ANSWER_TOKENS, title="Perguntas para revisar")
+        self._run(questions_prompt(doc["title"], text, cut), 120 + 70 * question_count(text), title="Perguntas para revisar",
+                  post=quiz_layout)
 
     def organize(self) -> None:
         doc = self._note()
@@ -644,12 +784,12 @@ def open_panel(window, prefill: str = "") -> None:
     if _panel is None:
         _panel = AssistantPanel(window)
     _panel.refresh_state()
-    geo = window.geometry()
     if not _panel.isVisible():
-        _panel.move(geo.right() - _panel.width() - 40, geo.top() + 80)
+        _panel.dock()
+    else:
+        _panel.place()
     _panel.show()
     _panel.raise_()
-    _panel.activateWindow()
     if prefill:
         _panel.input.setText(f"Explique este trecho: {prefill[:400]}")
         _panel.input.setFocus()

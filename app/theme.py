@@ -110,7 +110,11 @@ def apply(app) -> None:
     pal.setColor(QPalette.ColorRole.Link, QColor(ACCENT))
     app.setPalette(pal)
     app.setFont(ui_font(9.5))
-    app.setStyleSheet(STYLE)
+    # campos de uma linha nunca ficam mais baixos que a letra (o "g" e o "y" não são cortados,
+    # mesmo quando um formulário comprido aperta as linhas)
+    from PySide6.QtGui import QFontMetrics
+    line = QFontMetrics(app.font()).height() + 2
+    app.setStyleSheet(STYLE + f"QLineEdit {{ min-height: {line}px; }} QComboBox {{ min-height: {line}px; }}")
 
 
 STYLE = f"""

@@ -763,15 +763,20 @@ def test_proofread_highlights_and_fixes(window, qapp, monkeypatch):
 
     class FakeWorker(proofread.Worker):
         def start(self):
-            answer = ('[{"trecho": "Os cliente", "correcao": "O cliente", "motivo": "concordância"},'
-                      ' {"trecho": "audiencia", "correcao": "audiência", "motivo": "acento"},'
-                      ' {"trecho": "não existe", "correcao": "x"}, {"trecho": "chegou", "correcao": "chegou"}]')
-            for i, t in enumerate(self.texts):
-                self.found.emit(i, proofread.parse(answer, t))
+            # o modelo devolve a frase 1 corrigida e repete a 2 sem mudar nada
+            answer = "1. O cliente chegou na audiência.\n2. Houveram problemas."
+            for pi, texts in enumerate(self.parts):
+                for si, fixed in proofread.parse_lines(answer, len(texts)).items():
+                    sugg = proofread.diff(texts[si], fixed)
+                    if sugg:
+                        self.found.emit(pi, si, sugg)
             self.finished.emit()
     monkeypatch.setattr(proofread, "Worker", FakeWorker)
+    assert [t for t in proofread.sentences("O Dr. Lima citou o art. 186 do CC. Depois saiu.")] == [(0, 34), (35, 47)]
+    assert proofread.diff("O médico, que é bom, chegou.", "Totalmente diferente agora e outra coisa.") == []
     panel = proofread.ProofPanel(ed, story)
     panel.start()
+    pump(qapp, 20)
     assert len(panel.live()) == 2 and story.issues                      # inválidas ficaram de fora
     assert "corrija tudo" in panel.ask.text()
     story.update()
@@ -785,6 +790,7 @@ def test_proofread_highlights_and_fixes(window, qapp, monkeypatch):
     # corrigir tudo: um passo de desfazer
     panel2 = proofread.ProofPanel(ed, story)
     panel2.start()
+    pump(qapp, 20)
     panel2.fix_all()
     assert doc.toPlainText() == "O cliente chegou na audiência. Houveram problemas."
     ed.undo()

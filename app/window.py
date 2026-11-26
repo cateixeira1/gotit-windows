@@ -72,6 +72,9 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(core.asset_path("GotIt.ico"))))
         self.place_on_screen()
         central = QWidget()
+        # a janela pode ficar estreita (até ~480 px): os painéis laterais se recolhem sozinhos e a
+        # barra de cima quebra em mais linhas, em vez de travar a largura mínima
+        central.setMinimumSize(420, 360)
         self.setCentralWidget(central)
         lay = QHBoxLayout(central)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -286,6 +289,47 @@ class MainWindow(QMainWindow):
         frame = self.frameGeometry()
         frame.moveCenter(area.center())
         self.move(frame.topLeft())
+
+    # ------------------------------------------------------------------ largura
+    CANVAS_MIN = 380           # largura mínima da página antes de recolher um painel
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.fit_panels()
+
+    def fit_panels(self) -> None:
+        """Janela estreita: recolhe primeiro as Ferramentas, depois as páginas e por último o menu;
+        ao alargar, volta o que tinha sido recolhido sozinho (o que a pessoa fechou fica fechado)."""
+        ed = self.editor
+        auto = getattr(self, "_auto_hidden", set())
+        self._auto_hidden = auto
+        w = self.centralWidget().width()
+        simple = bool(ed.doc and ed.doc["canvas"].get("simpleNote"))
+        panels = [("tools", ed.tools, 300, lambda: ed.bar.tools.isChecked() and not simple),
+                  ("pages", ed.pages_panel, 150, lambda: ed.bar.pages.isChecked()),
+                  ("sidebar", self.sidebar, self.sidebar.width() or 330,
+                   lambda: self.settings.value("sidebarHidden", "false") != "true")]
+
+        def used():
+            return sum(pw for _, wid, pw, _ in panels if wid.isVisible())
+        # recolher
+        for key, wid, pw, wanted in panels:
+            if w - used() >= self.CANVAS_MIN:
+                break
+            if wid.isVisible():
+                wid.hide()
+                auto.add(key)
+        # devolver, do mais importante (menu) para o menos (Ferramentas); um que não cabe segura os outros
+        for key, wid, pw, wanted in reversed(panels):
+            if key not in auto or wid.isVisible():
+                continue
+            if not wanted():
+                auto.discard(key)
+                continue
+            if w - used() - pw < self.CANVAS_MIN:
+                break
+            wid.show()
+            auto.discard(key)
 
     # ------------------------------------------------------------------ fechar
     def closeEvent(self, e):

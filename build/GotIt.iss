@@ -1,7 +1,7 @@
 ﻿; Instalador do Got It! para Windows (Inno Setup 6.3+ ou 7). Gerado pelo build.ps1.
 
 #define AppName "Got It!"
-#define AppVersion "0.1.3"
+#define AppVersion "0.1.4"
 #define AppExe "GotIt.exe"
 
 [Setup]

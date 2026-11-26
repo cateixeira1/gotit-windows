@@ -146,9 +146,9 @@ def test_proofread_with_real_model(window, qapp):
     import proofread
     _install(window, models.ASSISTANT, ["gemma-4-E2B-it.litertlm"])
     text = "Os cliente chegou atrasado na audiencia."
-    w = proofread.Worker(window, [text])
+    w = proofread.Worker(window, [[text]])
     got = []
-    w.found.connect(lambda i, s: got.extend(s))
+    w.found.connect(lambda i, j, s: got.extend(s))
     w._run()
     fixes = {(s["trecho"], s["correcao"]) for s in got}
     assert any("audiência" in c for _, c in fixes), fixes

@@ -113,7 +113,10 @@ class CanvasView(QGraphicsView):
     def zoom(self) -> float:
         return self.transform().m11() / self.SCREEN
 
-    def set_zoom(self, z: float, anchor_mouse: bool = False) -> None:
+    _fit = True            # a página acompanha a largura da janela até a pessoa mudar o zoom
+
+    def set_zoom(self, z: float, anchor_mouse: bool = False, fit: bool = False) -> None:
+        self._fit = fit
         z = max(0.2, min(4.0, z))
         if not anchor_mouse:
             self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -130,7 +133,7 @@ class CanvasView(QGraphicsView):
             return
         avail = max(200, self.viewport().width() - 40)
         rect = sc.sceneRect()
-        self.set_zoom(min(2.0, avail / (rect.width() * self.SCREEN)))
+        self.set_zoom(min(2.0, avail / (rect.width() * self.SCREEN)), fit=True)
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -346,6 +349,17 @@ class CanvasView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    def focusNextPrevChild(self, next_):
+        """Tab no texto é tabulação (vai até a próxima parada da régua), não pular de campo."""
+        sc = self.scene()
+        focus = sc.focusItem() if sc is not None else None
+        if focus is not None and focus.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsFocusable \
+                and hasattr(focus, "textInteractionFlags") and focus.textInteractionFlags() & Qt.TextInteractionFlag.TextEditable:
+            return False
+        if focus is not None and getattr(focus, "editing", False):
+            return False
+        return super().focusNextPrevChild(next_)
+
     def keyPressEvent(self, event):
         if self.editor.handle_view_key(event):
             event.accept()
@@ -382,4 +396,6 @@ class CanvasView(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._fit and self.scene() is not None and event.oldSize().width() != event.size().width():
+            self.fit_width()
         self.editor.view_resized()

@@ -3,11 +3,11 @@ painel de páginas (à esquerda) e os botões redondos da caneta e do assistente
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMenu, QPushButton, QScrollArea, QSizePolicy, QSlider, QToolButton,
-                               QVBoxLayout, QWidget, QWidgetAction)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
+                               QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton, QScrollArea, QSizePolicy,
+                               QSlider, QToolButton, QVBoxLayout, QWidget, QWidgetAction, QWidgetItem)
 
 import icons
 import model
@@ -64,28 +64,176 @@ def color_icon_bar(name: str, color: str) -> QIcon:
     return QIcon(pm)
 
 
+BAR_ICON = "#2C2C2E"        # quase preto, como os símbolos da Apple
+BAR_ACTIVE = theme.ACCENT
+
+
+def bar_button(name: str, tip: str, checkable: bool = False) -> QToolButton:
+    b = QToolButton()
+    b.setObjectName("barbtn")
+    b.setIcon(icons.icon(name, BAR_ICON, BAR_ACTIVE))
+    b.setIconSize(QSize(18, 18))
+    b.setFixedSize(30, 30)
+    b.setToolTip(tip)
+    b.setAccessibleName(tip.split(" (")[0])
+    b.setCheckable(checkable)
+    b.setAutoRaise(True)
+    b.setFocusPolicy(Qt.FocusPolicy.NoFocus)        # o cursor continua no texto
+    return b
+
+
+class BarFlow(QLayout):
+    """Layout da barra de cima: duas linhas de grupos. Cada linha quebra sozinha quando a janela
+    fica estreita (a janela pode ficar tão estreita quanto o maior grupo). Os itens marcados
+    ``right`` ficam no fim da primeira linha (zoom, páginas, ferramentas e o menu da nota)."""
+
+    def __init__(self, parent=None, hspace: int = 12, vspace: int = 2):
+        super().__init__(parent)
+        self._items: list[tuple] = []       # (QLayoutItem, linha, à direita)
+        self.hspace, self.vspace = hspace, vspace
+
+    def add(self, widget, row: int, right: bool = False) -> None:
+        self.addChildWidget(widget)
+        self._items.append((QWidgetItem(widget), row, right))
+        self.invalidate()
+
+    # API do QLayout
+    def addItem(self, item):
+        self._items.append((item, 0, False))
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i][0] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i)[0] if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do(rect, apply=True)
+
+    def sizeHint(self):
+        m = self.contentsMargins()
+        rows = {0: 0, 1: 0}
+        for it, row, _ in self._items:
+            if not it.isEmpty():
+                rows[row] += it.sizeHint().width() + self.hspace
+        w = max(rows.values()) + m.left() + m.right()
+        return QSize(w, self.heightForWidth(w))
+
+    def minimumSize(self):
+        m = self.contentsMargins()
+        w = max([it.minimumSize().width() for it, _, _ in self._items if not it.isEmpty()] + [0])
+        return QSize(w + m.left() + m.right(), 34 + m.top() + m.bottom())
+
+    def _do(self, rect, apply: bool) -> int:
+        m = self.contentsMargins()
+        left, right_edge = rect.x() + m.left(), rect.x() + rect.width() - m.right()
+        y = rect.y() + m.top()
+        lines = []                       # [(itens [(item, x)], linha lógica)]
+        for row in (0, 1):
+            trailing = [it for it, r, is_right in self._items if r == row and is_right and not it.isEmpty()]
+            trail_w = sum(it.sizeHint().width() for it in trailing) + self.hspace * max(0, len(trailing) - 1)
+            cur, x, first, start = [], left, True, len(lines)
+            for it, r, is_right in self._items:
+                if r != row or is_right or it.isEmpty():
+                    continue
+                w = it.sizeHint().width()
+                limit = right_edge - (trail_w + self.hspace if first and trailing else 0)
+                if cur and x + w > limit:
+                    lines.append((cur, row))
+                    cur, x, first = [], left, False
+                cur.append((it, x))
+                x += w + self.hspace
+            lines.append((cur, row))
+            if trailing:
+                # no fim da primeira linha desta fileira (ou numa linha própria, se não couber)
+                head = lines[start][0]
+                used = (head[-1][1] + head[-1][0].sizeHint().width()) if head else left
+                x = right_edge - trail_w
+                placed = []
+                for it in trailing:
+                    placed.append((it, x))
+                    x += it.sizeHint().width() + self.hspace
+                if head and used + self.hspace > right_edge - trail_w:
+                    shift = (right_edge - trail_w) - left
+                    lines.insert(start + 1, ([(it, px - shift) for it, px in placed], row))
+                else:
+                    lines[start] = (head + placed, row)
+        lines = [ln for ln in lines if ln[0]]
+        total = 0
+        for i, (items, row) in enumerate(lines):
+            h = max([it.sizeHint().height() for it, _ in items] + [30])
+            if apply:
+                for it, x in items:
+                    sh = it.sizeHint()
+                    it.setGeometry(QRect(x, y + (h - sh.height()) // 2, sh.width(), sh.height()))
+            gap = self.vspace + (4 if i + 1 < len(lines) and lines[i + 1][1] != row else 0)
+            y += h + gap
+            total += h + gap
+        return total - self.vspace + m.top() + m.bottom()
+
+
+def group(*widgets, spacing: int = 1) -> QWidget:
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(spacing)
+    for x in widgets:
+        lay.addWidget(x)
+    return w
+
+
 class FormatBar(QFrame):
-    """Barra de cima: título, desfazer, estilos, fonte, tamanho, B I U S, cores, alinhamento,
-    listas e mais opções; zoom, páginas, ferramentas e o menu da nota."""
+    """Barra de cima, em duas linhas, com tudo à vista (nada escondido em "mais opções").
+
+    A ordem segue o uso: na 1ª linha, o que se faz com as palavras (desfazer, estilo, fonte e
+    tamanho, negrito/itálico/sublinhado, cor e marca-texto), da esquerda — onde o olho começa —
+    para a direita; na 2ª, o que se faz com o parágrafo (alinhamento, listas, recuos, espaçamento)
+    e depois inserir e revisar. Ícones de traço fino, sem molduras, grupos separados por espaço."""
 
     def __init__(self, editor):
         super().__init__()
         self.editor = editor
         self.setObjectName("formatbar")
-        self.setStyleSheet(f"#formatbar {{ background: {theme.CARD}; border-bottom: 1px solid {theme.LINE}; }}")
-        row = QHBoxLayout(self)
-        row.setContentsMargins(8, 6, 8, 6)
-        row.setSpacing(2)
-        self.sidebar = tool_button("sidebar", "Mostrar ou esconder o menu (Ctrl+\\)")
+        self.setStyleSheet(
+            f"#formatbar {{ background: #FFFFFF; border-bottom: 1px solid #E6E8EB; }}"
+            "#formatbar QToolButton#barbtn { border: none; border-radius: 7px; padding: 0; background: transparent; }"
+            "#formatbar QToolButton#barbtn:hover { background: rgba(0, 0, 0, 0.055); }"
+            "#formatbar QToolButton#barbtn:pressed { background: rgba(0, 0, 0, 0.10); }"
+            f"#formatbar QToolButton#barbtn:checked {{ background: rgba(46, 111, 183, 0.13); }}"
+            "#formatbar QToolButton#barbtn::menu-button { border: none; width: 11px; }"
+            "#formatbar QToolButton#barbtn[popupMode=\"1\"] { padding-right: 10px; }"
+            "#formatbar QComboBox { background: #F2F3F5; border: 1px solid transparent; border-radius: 7px; padding: 2px 8px; }"
+            "#formatbar QComboBox:hover { background: #EAECEF; }"
+            f"#formatbar QComboBox:focus {{ border: 1px solid {theme.ACCENT}; background: white; }}")
+        flow = BarFlow(self)
+        flow.setContentsMargins(10, 6, 10, 6)
+        self.flow = flow
+        ed = editor
+        self.last_color = theme.TEXT_COLORS[1][1] if len(theme.TEXT_COLORS) > 1 else "#C0392B"
+
+        # ---------------------------------------------------------- 1ª linha: palavras
+        self.sidebar = bar_button("sidebar", "Mostrar ou esconder o menu (Ctrl+\\)")
         self.title = QLineEdit()
         self.title.setPlaceholderText("Título")
         self.title.setFont(theme.ui_font(11, True))
-        self.title.setMinimumWidth(170)
-        self.title.setMaximumWidth(260)
+        self.title.setFixedWidth(176)
         self.title.setStyleSheet("QLineEdit { border: 1px solid transparent; background: transparent; padding: 3px 6px; }"
                                  "QLineEdit:hover { border: 1px solid #DDE2E7; } QLineEdit:focus { border: 1px solid %s; background: white; }" % theme.ACCENT)
-        self.undo = tool_button("undo", "Desfazer (Ctrl+Z)")
-        self.redo = tool_button("redo", "Refazer (Ctrl+Y)")
+        self.undo = bar_button("undo", "Desfazer (Ctrl+Z)")
+        self.redo = bar_button("redo", "Refazer (Ctrl+Y)")
         self.style_combo = QComboBox()
         self.style_combo.setToolTip("Estilo do parágrafo")
         for sid, title, *_ in textfmt.NAMED_STYLES:
@@ -93,37 +241,35 @@ class FormatBar(QFrame):
         self.style_combo.setFixedWidth(104)
         self.font_combo = QComboBox()
         self.font_combo.setToolTip("Fonte")
-        self.font_combo.setFixedWidth(150)
+        self.font_combo.setFixedWidth(146)
         self.font_combo.setMaxVisibleItems(18)
         self.size_combo = QComboBox()
         self.size_combo.setEditable(True)
         self.size_combo.setToolTip("Tamanho da fonte")
-        self.size_combo.setFixedWidth(62)
-        for s in FONT_SIZES:
-            self.size_combo.addItem(str(s))
-        self.bold = tool_button("bold", "Negrito (Ctrl+B)", True)
-        self.italic = tool_button("italic", "Itálico (Ctrl+I)", True)
-        self.underline = tool_button("underline", "Sublinhado (Ctrl+U)", True)
-        self.strike = tool_button("strike", "Tachado", True)
-        self.color = tool_button("text-color", "Cor do texto")
-        self.color.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.highlight = tool_button("highlight", "Destacar (marca-texto)")
-        self.highlight.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.align = tool_button("align-left", "Alinhamento")
-        self.align.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.lists = tool_button("list", "Listas (ou escreva \"- \" ou \"1. \" no começo da linha)")
-        self.lists.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.spacing = tool_button("line-spacing", "Espaçamento entre linhas e parágrafos")
-        self.spacing.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.proof = tool_button("spellcheck", "Revisar o texto (ortografia e gramática, pelo assistente)")
-        self.proof.clicked.connect(editor.proofread)
-        self.more_text = tool_button("more", "Mais opções de texto")
-        self.more_text.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.size_combo.setFixedWidth(58)
+        for sz in FONT_SIZES:
+            self.size_combo.addItem(str(sz))
+        self.grow = bar_button("font-grow", "Aumentar a fonte (Ctrl+])")
+        self.shrink = bar_button("font-shrink", "Diminuir a fonte (Ctrl+[)")
+        self.bold = bar_button("bold", "Negrito (Ctrl+B)", True)
+        self.italic = bar_button("italic", "Itálico (Ctrl+I)", True)
+        self.underline = bar_button("underline", "Sublinhado (Ctrl+U)", True)
+        self.strike = bar_button("strike", "Tachado", True)
+        self.color = bar_button("text-color", "Cor do texto (clique: a última cor; seta: escolher)")
+        self.color.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.color.setFixedSize(42, 30)
+        self.highlight = bar_button("highlight", "Marca-texto (clique: a cor escolhida; seta: escolher). "
+                                                 "Com uma cor escolhida, arraste com o botão direito do mouse sobre o texto para destacar")
+        self.highlight.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self.highlight.setFixedSize(42, 30)
         self.zoom = QToolButton()
+        self.zoom.setObjectName("barbtn")
         self.zoom.setText("100%")
         self.zoom.setToolTip("Zoom (Ctrl + roda do mouse)")
         self.zoom.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.zoom.setMinimumWidth(56)
+        self.zoom.setFixedHeight(30)
+        self.zoom.setMinimumWidth(58)
+        self.zoom.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.add_cards = QToolButton()
         self.add_cards.setIcon(icons.icon("plus", theme.INK))
         self.add_cards.setText("Adicionar notas")
@@ -131,69 +277,113 @@ class FormatBar(QFrame):
         self.add_cards.setToolTip("Adicionar notas a esta Teia")
         self.add_cards.clicked.connect(editor.add_notes_to_teia)
         self.add_cards.hide()
-        self.pages = tool_button("pages", "Páginas", True)
-        self.tools = tool_button("shapes", "Ferramentas", True)
-        self.note_menu = tool_button("more", "Mais (exportar, imprimir, citada em…)")
+        self.pages = bar_button("pages", "Páginas", True)
+        self.tools = bar_button("shapes", "Ferramentas (desenhar, inserir, formas, página)", True)
+        self.note_menu = bar_button("more", "Mais: exportar, abrir no Prumo PDF, imprimir, citada em…")
         self.note_menu.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.note_menu.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
 
-        def sep():
-            line = QFrame()
-            line.setFrameShape(QFrame.Shape.VLine)
-            line.setStyleSheet(f"color: {theme.LINE};")
-            line.setFixedHeight(22)
-            return line
-        self.text_widgets = [self.style_combo, self.font_combo, self.size_combo, self.bold, self.italic, self.underline,
-                             self.strike, self.color, self.highlight, self.align, self.lists, self.spacing, self.proof,
-                             self.more_text]
-        for w in (self.sidebar, self.title, sep(), self.undo, self.redo, sep(), self.style_combo, self.font_combo,
-                  self.size_combo, self.bold, self.italic, self.underline, self.strike, self.color, self.highlight,
-                  self.align, self.lists, self.spacing, self.proof, self.more_text):
-            row.addWidget(w)
-        row.addStretch(1)
-        for w in (self.add_cards, self.zoom, sep(), self.pages, self.tools, self.note_menu):
-            row.addWidget(w)
+        # ---------------------------------------------------------- 2ª linha: parágrafo, inserir, revisar
+        self.aligns = {}
+        self.align_group = QButtonGroup(self)
+        self.align_group.setExclusive(True)
+        for key, icon, tip in (("left", "align-left", "Alinhar à esquerda (Ctrl+L)"), ("center", "align-center", "Centralizar (Ctrl+E)"),
+                               ("right", "align-right", "Alinhar à direita (Ctrl+R)"), ("justify", "align-justify", "Justificar (Ctrl+J)")):
+            b = bar_button(icon, tip, True)
+            b.clicked.connect(lambda _=False, k=key: ed.fmt("align", k))
+            self.aligns[key] = b
+            self.align_group.addButton(b)
+        self.bullets = bar_button("list", "Lista com marcadores (ou escreva \"- \" no começo da linha)", True)
+        self.numbers = bar_button("list-num", "Lista numerada (ou escreva \"1. \" no começo da linha)", True)
+        self.checklist = bar_button("checklist", "Lista de tarefas, com caixinhas para marcar (ou escreva \"[] \")", True)
+        self.lists = self.bullets          # compatibilidade
+        self.outdent = bar_button("outdent", "Diminuir recuo")
+        self.indent = bar_button("indent", "Aumentar recuo")
+        self.spacing = bar_button("line-spacing", "Espaçamento entre linhas e parágrafos")
+        self.spacing.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.spacing.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
+        self.sup = bar_button("superscript", "Sobrescrito (1º, m²)", True)
+        self.sub = bar_button("subscript", "Subscrito (H₂O)", True)
+        self.clear = bar_button("clear-format", "Limpar a formatação do trecho")
+        self.link = bar_button("link", "Inserir link (Ctrl+K)")
+        self.note_link = bar_button("note-link", "Ligar a outra nota")
+        self.table = bar_button("table", "Inserir tabela")
+        self.find = bar_button("find", "Localizar e substituir (Ctrl+H)")
+        self.proof = bar_button("spellcheck", "Revisar o texto (ortografia e gramática, pelo assistente)")
+        self.proof.clicked.connect(editor.proofread)
+        self.cite = bar_button("quote", "Citação ABNT do trecho selecionado")
+        self.signature = bar_button("signature", "Linha de assinatura")
+        self.keep = bar_button("keep-next", "Manter com o parágrafo seguinte (não separa na quebra de página)", True)
+        self.ruler = bar_button("ruler", "Mostrar a régua (recuos e tabulações)", True)
+        self.more_text = None
+
+        self.text_widgets = [self.style_combo, self.font_combo, self.size_combo, self.grow, self.shrink, self.bold,
+                             self.italic, self.underline, self.strike, self.color, self.highlight, *self.aligns.values(),
+                             self.bullets, self.numbers, self.checklist, self.outdent, self.indent, self.spacing, self.sup,
+                             self.sub, self.clear, self.link, self.note_link, self.find, self.proof, self.cite,
+                             self.signature, self.keep]
+        for w in (group(self.sidebar, self.title, spacing=4), group(self.undo, self.redo), self.style_combo,
+                  group(self.font_combo, self.size_combo, spacing=4), group(self.grow, self.shrink),
+                  group(self.bold, self.italic, self.underline, self.strike), group(self.color, self.highlight, spacing=2)):
+            flow.add(w, 0)
+        for w in (self.add_cards, group(self.pages, self.tools, self.note_menu)):
+            flow.add(w, 0, right=True)
+        for w in (group(*self.aligns.values()), group(self.bullets, self.numbers, self.checklist),
+                  group(self.outdent, self.indent, self.spacing), group(self.sup, self.sub, self.clear),
+                  group(self.link, self.note_link, self.table), group(self.find, self.proof, self.cite, self.signature, self.keep),
+                  self.ruler):
+            flow.add(w, 1)
+        flow.add(self.zoom, 1, right=True)
+        self.bullets.clicked.connect(lambda: ed.fmt("bullets"))
+        self.numbers.clicked.connect(lambda: ed.fmt("numbers"))
+        self.checklist.clicked.connect(lambda: ed.fmt("checklist"))
+        self.outdent.clicked.connect(lambda: ed.fmt("indent", -1))
+        self.indent.clicked.connect(lambda: ed.fmt("indent", 1))
+        self.grow.clicked.connect(lambda: ed.fmt("grow", 1))
+        self.shrink.clicked.connect(lambda: ed.fmt("grow", -1))
+        self.sup.clicked.connect(lambda: ed.fmt("valign", "super"))
+        self.sub.clicked.connect(lambda: ed.fmt("valign", "sub"))
+        self.clear.clicked.connect(lambda: ed.fmt("clear"))
+        self.link.clicked.connect(ed.insert_link)
+        self.note_link.clicked.connect(ed.link_to_note)
+        self.table.clicked.connect(ed.insert_table)
+        self.find.clicked.connect(ed.find_replace)
+        self.cite.clicked.connect(ed.cite_current)
+        self.signature.clicked.connect(ed.insert_signature)
+        self.keep.clicked.connect(ed.set_keep_with_next)
+        self.color.clicked.connect(lambda: ed.fmt("color", self.last_color))
+        self.highlight.clicked.connect(lambda: ed.fmt("highlight", ed.last_highlight))
         self._build_menus()
+        self.show_colors()
+
+    def show_colors(self) -> None:
+        """O botão mostra a cor que um clique aplica."""
+        self.color.setIcon(color_icon_bar("text-color", self.last_color))
+        hl = self.editor.last_highlight or "#F4FF2E"
+        base = icons.pixmap("highlight", BAR_ICON, 20)
+        pm = QPixmap(base.size())
+        pm.setDevicePixelRatio(base.devicePixelRatio())
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.drawPixmap(0, 0, base)
+        p.fillRect(2, 17, 16, 3, QColor(hl))
+        p.end()
+        self.highlight.setIcon(QIcon(pm))
 
     def _build_menus(self):
         ed = self.editor
         m = QMenu(self)
         for title, value in theme.TEXT_COLORS:
             a = m.addAction(swatch_icon(value), title)
-            a.triggered.connect(lambda _=False, v=value: ed.fmt("color", v))
+            a.triggered.connect(lambda _=False, v=value: self._pick_color(v))
         self.color.setMenu(m)
         m = QMenu(self)
         for title, value in theme.HIGHLIGHTS:
             a = m.addAction(swatch_icon(value), title)
-            a.triggered.connect(lambda _=False, v=value: ed.fmt("highlight", v))
+            a.triggered.connect(lambda _=False, v=value: ed.pick_highlight(v))
         m.addSeparator()
         m.addAction(swatch_icon(None), "Tirar destaque").triggered.connect(lambda: ed.fmt("highlight", None))
         self.highlight.setMenu(m)
-        m = QMenu(self)
-        for title, key, icon in (("Esquerda", "left", "align-left"), ("Centro", "center", "align-center"),
-                                 ("Direita", "right", "align-right"), ("Justificado", "justify", "align-justify")):
-            m.addAction(icons.icon(icon), title).triggered.connect(lambda _=False, k=key: ed.fmt("align", k))
-        self.align.setMenu(m)
-        m = QMenu(self)
-        m.addAction(icons.icon("list"), "Com marcadores").triggered.connect(lambda: ed.fmt("bullets"))
-        m.addAction(icons.icon("list-num"), "Numerada").triggered.connect(lambda: ed.fmt("numbers"))
-        m.addAction("Remover lista").triggered.connect(lambda: ed.fmt("nolist"))
-        self.lists.setMenu(m)
-        m = QMenu(self)
-        m.addAction(icons.icon("indent"), "Aumentar recuo").triggered.connect(lambda: ed.fmt("indent", 1))
-        m.addAction(icons.icon("outdent"), "Diminuir recuo").triggered.connect(lambda: ed.fmt("indent", -1))
-        self.keep_action = m.addAction(icons.icon("keep-next"), "Manter com o parágrafo seguinte")
-        self.keep_action.setCheckable(True)
-        self.keep_action.triggered.connect(ed.set_keep_with_next)
-        m.aboutToShow.connect(lambda: self.keep_action.setChecked(ed.current_keep()))
-        m.addAction(icons.icon("signature"), "Linha de assinatura…").triggered.connect(ed.insert_signature)
-        m.addSeparator()
-        m.addAction("Aumentar a fonte (Ctrl+])").triggered.connect(lambda: ed.fmt("grow", 1))
-        m.addAction("Diminuir a fonte (Ctrl+[)").triggered.connect(lambda: ed.fmt("grow", -1))
-        m.addSeparator()
-        m.addAction(icons.icon("link"), "Inserir link… (Ctrl+K)").triggered.connect(ed.insert_link)
-        m.addAction(icons.icon("note"), "Ligar a outra nota…").triggered.connect(ed.link_to_note)
-        m.addAction(icons.icon("find"), "Localizar e substituir… (Ctrl+H)").triggered.connect(ed.find_replace)
-        self.more_text.setMenu(m)
         m = QMenu(self)
         self.spacing_actions = []
         for f in (1.0, 1.15, 1.5, 2.0, 2.5, 3.0):
@@ -224,6 +414,11 @@ class FormatBar(QFrame):
         self.zoom.setMenu(m)
         self.note_menu.setMenu(ed.build_note_menu(self))
 
+    def _pick_color(self, value: str) -> None:
+        self.last_color = value
+        self.show_colors()
+        self.editor.fmt("color", value)
+
     def set_fonts(self, families: list[str]) -> None:
         self.font_combo.blockSignals(True)
         self.font_combo.clear()
@@ -239,7 +434,8 @@ class FormatBar(QFrame):
             w.setEnabled(enabled)
         if not state:
             return
-        for w, key in ((self.bold, "bold"), (self.italic, "italic"), (self.underline, "underline"), (self.strike, "strike")):
+        for w, key in ((self.bold, "bold"), (self.italic, "italic"), (self.underline, "underline"), (self.strike, "strike"),
+                       (self.sup, "super"), (self.sub, "sub"), (self.keep, "keep")):
             w.blockSignals(True)
             w.setChecked(bool(state.get(key)))
             w.blockSignals(False)
@@ -253,10 +449,13 @@ class FormatBar(QFrame):
         self.size_combo.blockSignals(True)
         self.size_combo.setEditText(f"{state.get('size', 12):g}")
         self.size_combo.blockSignals(False)
-        icon = {"center": "align-center", "right": "align-right", "justify": "align-justify"}.get(state.get("align"), "align-left")
-        self.align.setIcon(icons.icon(icon, theme.INK, theme.ACCENT))
-        self.lists.setCheckable(True)
-        self.lists.setChecked(bool(state.get("list")))
+        b = self.aligns.get(state.get("align") or "left")
+        if b is not None:
+            b.setChecked(True)
+        kind = state.get("list")
+        self.bullets.setChecked(kind == "bullets")
+        self.numbers.setChecked(kind == "numbers")
+        self.checklist.setChecked(kind == "check")
         self.style_combo.blockSignals(True)
         idx = self.style_combo.findData(state.get("named") or "body")
         self.style_combo.setCurrentIndex(max(0, idx))
@@ -287,7 +486,7 @@ class ToolsPanel(QScrollArea):
         super().__init__()
         self.editor = editor
         self.setWidgetResizable(True)
-        self.setFixedWidth(296)
+        self.setFixedWidth(300)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         host = QWidget()
@@ -295,7 +494,7 @@ class ToolsPanel(QScrollArea):
         host.setStyleSheet(f"#toolshost {{ background: {theme.CARD}; border-left: 1px solid {theme.LINE}; }}")
         self.setWidget(host)
         lay = QVBoxLayout(host)
-        lay.setContentsMargins(12, 10, 12, 16)
+        lay.setContentsMargins(12, 10, 20, 16)        # a barra de rolagem não cobre a última coluna
         lay.setSpacing(6)
         self.tool_buttons: dict[str, QToolButton] = {}
 
