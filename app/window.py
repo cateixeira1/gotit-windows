@@ -291,7 +291,7 @@ class MainWindow(QMainWindow):
         self.move(frame.topLeft())
 
     # ------------------------------------------------------------------ largura
-    CANVAS_MIN = 380           # largura mínima da página antes de recolher um painel
+    CANVAS_MIN = 480           # largura mínima da página antes de recolher um painel
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

@@ -87,7 +87,7 @@ class BarFlow(QLayout):
     fica estreita (a janela pode ficar tão estreita quanto o maior grupo). Os itens marcados
     ``right`` ficam no fim da primeira linha (zoom, páginas, ferramentas e o menu da nota)."""
 
-    def __init__(self, parent=None, hspace: int = 12, vspace: int = 2):
+    def __init__(self, parent=None, hspace: int = 10, vspace: int = 2):
         super().__init__(parent)
         self._items: list[tuple] = []       # (QLayoutItem, linha, à direita)
         self.hspace, self.vspace = hspace, vspace
@@ -200,8 +200,9 @@ class FormatBar(QFrame):
 
     A ordem segue o uso: na 1ª linha, o que se faz com as palavras (desfazer, estilo, fonte e
     tamanho, negrito/itálico/sublinhado, cor e marca-texto), da esquerda — onde o olho começa —
-    para a direita; na 2ª, o que se faz com o parágrafo (alinhamento, listas, recuos, espaçamento)
-    e depois inserir e revisar. Ícones de traço fino, sem molduras, grupos separados por espaço."""
+    para a direita; na 2ª, o que se faz com o parágrafo (alinhamento, listas, recuos, espaçamento),
+    os ajustes finos do caractere (A+/A−, sobrescrito, subscrito, limpar) e depois inserir e revisar.
+    A 1ª linha cabe em ~900 px (janela de 1290 px com o menu aberto, a 125% de escala). Ícones de traço fino, sem molduras, grupos separados por espaço."""
 
     def __init__(self, editor):
         super().__init__()
@@ -229,7 +230,7 @@ class FormatBar(QFrame):
         self.title = QLineEdit()
         self.title.setPlaceholderText("Título")
         self.title.setFont(theme.ui_font(11, True))
-        self.title.setFixedWidth(176)
+        self.title.setFixedWidth(150)
         self.title.setStyleSheet("QLineEdit { border: 1px solid transparent; background: transparent; padding: 3px 6px; }"
                                  "QLineEdit:hover { border: 1px solid #DDE2E7; } QLineEdit:focus { border: 1px solid %s; background: white; }" % theme.ACCENT)
         self.undo = bar_button("undo", "Desfazer (Ctrl+Z)")
@@ -238,10 +239,10 @@ class FormatBar(QFrame):
         self.style_combo.setToolTip("Estilo do parágrafo")
         for sid, title, *_ in textfmt.NAMED_STYLES:
             self.style_combo.addItem(title, sid)
-        self.style_combo.setFixedWidth(104)
+        self.style_combo.setFixedWidth(98)
         self.font_combo = QComboBox()
         self.font_combo.setToolTip("Fonte")
-        self.font_combo.setFixedWidth(146)
+        self.font_combo.setFixedWidth(134)
         self.font_combo.setMaxVisibleItems(18)
         self.size_combo = QComboBox()
         self.size_combo.setEditable(True)
@@ -323,13 +324,13 @@ class FormatBar(QFrame):
                              self.sub, self.clear, self.link, self.note_link, self.find, self.proof, self.cite,
                              self.signature, self.keep]
         for w in (group(self.sidebar, self.title, spacing=4), group(self.undo, self.redo), self.style_combo,
-                  group(self.font_combo, self.size_combo, spacing=4), group(self.grow, self.shrink),
+                  group(self.font_combo, self.size_combo, spacing=4),
                   group(self.bold, self.italic, self.underline, self.strike), group(self.color, self.highlight, spacing=2)):
             flow.add(w, 0)
         for w in (self.add_cards, group(self.pages, self.tools, self.note_menu)):
             flow.add(w, 0, right=True)
         for w in (group(*self.aligns.values()), group(self.bullets, self.numbers, self.checklist),
-                  group(self.outdent, self.indent, self.spacing), group(self.sup, self.sub, self.clear),
+                  group(self.outdent, self.indent, self.spacing), group(self.grow, self.shrink, self.sup, self.sub, self.clear),
                   group(self.link, self.note_link, self.table), group(self.find, self.proof, self.cite, self.signature, self.keep),
                   self.ruler):
             flow.add(w, 1)

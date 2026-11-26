@@ -42,7 +42,8 @@ def test_bar_two_rows_everything_visible_and_window_narrows(window, qapp):
     for w in (bar.bold, bar.highlight, bar.checklist, bar.cite, bar.ruler, bar.proof, bar.keep, bar.table,
               bar.aligns["justify"], bar.sup, bar.clear):
         assert w.isVisible() and bar.rect().contains(w.mapTo(bar, QPoint(w.width() // 2, w.height() // 2)))
-    assert bar.height() <= 90                                  # duas linhas na janela larga
+    if window.width() >= 1300:                                 # (a tela do CI do Windows é menor)
+        assert bar.height() <= 90                              # duas linhas na janela larga
     assert window.minimumSizeHint().width() <= 480 or window.minimumSize().width() <= 480
     window.resize(520, 760)
     pump(qapp, 60)
